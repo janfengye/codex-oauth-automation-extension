@@ -2,29 +2,34 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 
-test('step 6 runs cookie cleanup and completes from background', async () => {
-  const source = fs.readFileSync('background/steps/clear-login-cookies.js', 'utf8');
+test('step 6 waits for registration success and completes from background', async () => {
+  const source = fs.readFileSync('background/steps/wait-registration-success.js', 'utf8');
   const globalScope = {};
   const api = new Function('self', `${source}; return self.MultiPageBackgroundStep6;`)(globalScope);
 
   const events = {
-    cleanupCalls: 0,
+    logs: [],
+    waits: [],
     completedSteps: [],
   };
 
   const executor = api.createStep6Executor({
+    addLog: async (message, level = 'info') => {
+      events.logs.push({ message, level });
+    },
     completeStepFromBackground: async (step) => {
       events.completedSteps.push(step);
     },
-    runPreStep6CookieCleanup: async () => {
-      events.cleanupCalls += 1;
+    sleepWithStop: async (ms) => {
+      events.waits.push(ms);
     },
   });
 
   await executor.executeStep6();
 
-  assert.equal(events.cleanupCalls, 1);
+  assert.deepStrictEqual(events.waits, [20000]);
   assert.deepStrictEqual(events.completedSteps, [6]);
+  assert.ok(events.logs.some(({ message }) => /等待 20 秒/.test(message)));
 });
 
 test('step 7 retries up to configured limit and then fails', async () => {

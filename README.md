@@ -506,7 +506,7 @@ Cloudflare 模式下，插件不会再调用 Cloudflare API 创建路由。
 3. `Fill Password`
 4. `Get Signup Code`
 5. `Fill Name / Birthday`
-6. `Clear Login Cookies`
+6. `Wait Registration Success`
 7. `Login via OAuth`
 8. `Get Login Code`
 9. `Manual OAuth Confirm`
@@ -544,7 +544,7 @@ Cloudflare 模式下，插件不会再调用 Cloudflare API 创建路由。
 - 打开 `https://chatgpt.com/`
 - 确认官网首页或注册入口弹窗已经可操作
 
-这一步不再获取 `OAuth` 链接；`OAuth` 链接会在 Step 6 内部按需刷新。
+这一步不再获取 `OAuth` 链接；`OAuth` 链接会在 Step 7 内部按需刷新。
 
 ### Step 2: Signup + Email
 
@@ -600,15 +600,14 @@ Cloudflare 模式下，插件不会再调用 Cloudflare API 创建路由。
 如果资料页出现顶部“我同意以下所有各项”总勾选框，脚本会优先自动勾选，再点击 `完成帐户创建`。
 点击 `完成帐户创建` 后，Step 5 会立刻记为完成，不再等待页面跳转结果；自动运行在进入 Step 6 前只会等待当前页面加载完成，不再接管 ChatGPT 跳转或 onboarding 跳过逻辑。
 
-### Step 6: Clear Login Cookies
+### Step 6: Wait Registration Success
 
-这一步只负责登录前清理环境：
+这一步只负责等待注册完成后的页面状态稳定：
 
-- 开始前先等待 10 秒
-- 直接删除 `chatgpt.com / openai.com` 相关 cookies
-- 必要时再用 `browsingData` 补扫一次
+- 固定等待 20 秒
+- 不再清理 `chatgpt.com / openai.com` 相关 cookies
+- 等待完成后直接进入后续 OAuth 登录链路
 
-把 cookies 清理独立成单独步骤后，后续登录链路的重开锚点就不再落在这里。
 
 ### Step 7: Login via OAuth
 

@@ -28,7 +28,7 @@ test('step definitions module exposes ordered normal and Plus step metadata', ()
       'fill-password',
       'fetch-signup-code',
       'fill-profile',
-      'clear-login-cookies',
+      'wait-registration-success',
       'oauth-login',
       'fetch-login-code',
       'confirm-oauth',
@@ -36,7 +36,7 @@ test('step definitions module exposes ordered normal and Plus step metadata', ()
     ]
   );
   assert.equal(steps[0].title, '打开 ChatGPT 官网');
-  assert.equal(steps[5].title, '清理登录 Cookies');
+  assert.equal(steps[5].title, '等待注册成功');
   assert.equal(phoneSteps[1].title, '注册并输入手机号');
   assert.equal(phoneSteps[3].title, '获取手机验证码');
 
@@ -58,7 +58,7 @@ test('step definitions module exposes ordered normal and Plus step metadata', ()
       'platform-verify',
     ]
   );
-  assert.equal(plusSteps.some((step) => step.key === 'clear-login-cookies'), false);
+  assert.equal(plusSteps.some((step) => step.key === 'wait-registration-success'), false);
   assert.equal(plusSteps.some((step) => step.key === 'fetch-login-code'), true);
   assert.equal(plusSteps.find((step) => step.key === 'paypal-approve')?.title, 'PayPal 登录与授权');
   assert.equal(plusPhoneSteps[1].title, '注册并输入手机号');
