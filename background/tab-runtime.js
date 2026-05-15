@@ -593,7 +593,8 @@
 
     function getContentScriptResponseTimeoutMs(message) {
       if (!message || typeof message !== 'object') return 30000;
-      if (message.type === 'EXECUTE_STEP' && Number(message.step) === 6) return 75000;
+      if (message.type === 'EXECUTE_NODE' && String(message.nodeId || message.payload?.nodeId || '').trim() === 'fill-profile') return 150000;
+      if (message.type === 'EXECUTE_NODE' && String(message.nodeId || message.payload?.nodeId || '').trim() === 'wait-registration-success') return 75000;
       if (message.type === 'POLL_EMAIL') {
         const maxAttempts = Math.max(1, Number(message.payload?.maxAttempts) || 1);
         const intervalMs = Math.max(0, Number(message.payload?.intervalMs) || 0);
@@ -649,7 +650,7 @@
           settled = true;
           const seconds = Math.ceil(responseTimeoutMs / 1000);
           console.warn(LOG_PREFIX, `[sendTabMessageWithTimeout] timeout ${debugLabel} after ${Date.now() - startedAt}ms`);
-          reject(new Error(`Content script on ${source} did not respond in ${seconds}s. Try refreshing the tab and retry.`));
+          reject(new Error(`${getSourceLabel(source)} 内容脚本 ${seconds} 秒内未响应，请刷新页面后重试。`));
         }, responseTimeoutMs);
 
         chrome.tabs.sendMessage(tabId, message)
@@ -677,7 +678,7 @@
         const commandKey = getSourceCommandKey(source);
         const timer = setTimeout(() => {
           pendingCommands.delete(commandKey);
-          reject(new Error(`Content script on ${source} did not respond in ${timeout / 1000}s. Try refreshing the tab and retry.`));
+          reject(new Error(`${getSourceLabel(source)} 内容脚本 ${timeout / 1000} 秒内未响应，请刷新页面后重试。`));
         }, timeout);
         pendingCommands.set(commandKey, {
           message,

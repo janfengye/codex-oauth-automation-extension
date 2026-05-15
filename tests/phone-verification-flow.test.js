@@ -140,6 +140,67 @@ test('signup phone helper persists signup runtime state without touching add-pho
   assert.ok(!setStateCalls.some((updates) => Object.prototype.hasOwnProperty.call(updates, 'currentPhoneActivation')));
 });
 
+test('signup phone helper buys a fresh number instead of using reuse entries', async () => {
+  const actions = [];
+  let currentState = {
+    heroSmsApiKey: 'demo-key',
+    signupMethod: 'phone',
+    phoneSmsReuseEnabled: true,
+    heroSmsReuseEnabled: true,
+    phonePreferredActivation: {
+      activationId: 'preferred-activation',
+      phoneNumber: '66950002222',
+      provider: 'hero-sms',
+      serviceCode: 'dr',
+      countryId: 52,
+      successfulUses: 0,
+      maxUses: 3,
+    },
+    reusablePhoneActivation: {
+      activationId: 'paid-reuse',
+      phoneNumber: '66950003333',
+      provider: 'hero-sms',
+      serviceCode: 'dr',
+      countryId: 52,
+      successfulUses: 1,
+      maxUses: 3,
+    },
+  };
+  const helpers = api.createPhoneVerificationHelpers({
+    addLog: async () => {},
+    ensureStep8SignupPageReady: async () => {},
+    fetchImpl: async (url) => {
+      const parsedUrl = new URL(url);
+      const action = parsedUrl.searchParams.get('action');
+      actions.push(action);
+      if (action === 'reactivate') {
+        throw new Error('phone signup should not reactivate reusable numbers');
+      }
+      if (action === 'getPrices') {
+        return { ok: true, text: async () => buildHeroSmsPricesPayload() };
+      }
+      if (action === 'getNumber') {
+        return { ok: true, text: async () => 'ACCESS_NUMBER:signup-fresh:66959916439' };
+      }
+      throw new Error(`Unexpected HeroSMS action: ${action}`);
+    },
+    getState: async () => currentState,
+    sendToContentScriptResilient: async () => ({}),
+    setState: async (updates) => {
+      currentState = { ...currentState, ...updates };
+    },
+    sleepWithStop: async () => {},
+    throwIfStopped: () => {},
+  });
+
+  const activation = await helpers.prepareSignupPhoneActivation(currentState);
+
+  assert.equal(activation.activationId, 'signup-fresh');
+  assert.deepStrictEqual(actions, ['getPrices', 'getNumber']);
+  assert.equal(currentState.signupPhoneNumber, '66959916439');
+  assert.equal(currentState.reusablePhoneActivation.activationId, 'paid-reuse');
+});
+
 test('signup phone helper polls signup SMS code and keeps activation purpose isolated', async () => {
   const setStateCalls = [];
   let currentState = {
@@ -272,6 +333,82 @@ test('signup phone helper finalizes or cancels signup activation without clearin
   assert.equal(currentState.accountIdentifier, '66959916439');
   assert.equal(currentState.currentPhoneActivation.activationId, 'add-phone-activation');
   assert.ok(!setStateCalls.some((updates) => Object.prototype.hasOwnProperty.call(updates, 'currentPhoneActivation')));
+});
+
+test('signup phone helper does not store signup numbers into the reusable pool', async () => {
+  const setStateCalls = [];
+  let currentState = {
+    heroSmsApiKey: 'demo-key',
+    signupMethod: 'phone',
+    phoneSmsReuseEnabled: true,
+    heroSmsReuseEnabled: true,
+    signupPhoneActivation: {
+      activationId: 'signup-123',
+      phoneNumber: '66959916439',
+      provider: 'hero-sms',
+      serviceCode: 'dr',
+      countryId: 52,
+      successfulUses: 0,
+      maxUses: 3,
+    },
+    reusablePhoneActivation: {
+      activationId: 'paid-reuse',
+      phoneNumber: '66950003333',
+      provider: 'hero-sms',
+      serviceCode: 'dr',
+      countryId: 52,
+      successfulUses: 1,
+      maxUses: 3,
+    },
+    phoneReusableActivationPool: [
+      {
+        activationId: 'pool-reuse',
+        phoneNumber: '66950004444',
+        provider: 'hero-sms',
+        serviceCode: 'dr',
+        countryId: 52,
+        successfulUses: 1,
+        maxUses: 3,
+      },
+    ],
+  };
+  const helpers = api.createPhoneVerificationHelpers({
+    addLog: async () => {},
+    ensureStep8SignupPageReady: async () => {},
+    fetchImpl: async (url) => {
+      const parsedUrl = new URL(url);
+      const action = parsedUrl.searchParams.get('action');
+      if (action === 'setStatus') {
+        return { ok: true, text: async () => 'ACCESS_READY' };
+      }
+      throw new Error(`Unexpected HeroSMS action: ${action}`);
+    },
+    getState: async () => currentState,
+    sendToContentScriptResilient: async () => ({}),
+    setState: async (updates) => {
+      setStateCalls.push(updates);
+      currentState = { ...currentState, ...updates };
+    },
+    sleepWithStop: async () => {},
+    throwIfStopped: () => {},
+  });
+
+  await helpers.finalizeSignupPhoneActivationAfterSuccess(currentState, currentState.signupPhoneActivation);
+
+  assert.equal(currentState.reusablePhoneActivation.activationId, 'paid-reuse');
+  assert.deepStrictEqual(
+    currentState.phoneReusableActivationPool.map((entry) => entry.activationId),
+    ['pool-reuse']
+  );
+  assert.equal(
+    setStateCalls.some((updates) => updates?.reusablePhoneActivation?.activationId === 'signup-123'),
+    false
+  );
+  assert.equal(
+    setStateCalls.some((updates) => Array.isArray(updates?.phoneReusableActivationPool)
+      && updates.phoneReusableActivationPool.some((entry) => entry.activationId === 'signup-123')),
+    false
+  );
 });
 
 test('signup phone helper completes signup SMS verification without touching add-phone activation', async () => {
@@ -578,7 +715,7 @@ test('signup phone helper does not let a hung page-state probe stall HeroSMS pol
     heroSmsReuseEnabled: false,
     phoneCodeWaitSeconds: 15,
     phoneCodeTimeoutWindows: 1,
-    phoneCodePollIntervalSeconds: 1,
+    phoneCodePollIntervalSeconds: 15,
     phoneCodePollMaxRounds: 1,
     signupPhoneNumber: '66959916439',
     signupPhoneVerificationPurpose: 'signup',
@@ -658,7 +795,7 @@ test('signup phone helper does not let a hung page-state probe stall HeroSMS pol
     caughtError = error;
   }
 
-  assert.equal(smsPollCount, 1, 'HeroSMS polling should continue after the first waiting status');
+  assert.equal(smsPollCount, 1, 'HeroSMS polling should time out cleanly even when the page-state probe hangs');
   assert.equal(pageReadyCalls, 2, 'should attempt the page-state probe during SMS polling');
   assert.deepStrictEqual(contentMessages.map((message) => message.type), ['STEP8_GET_STATE']);
   assert.deepStrictEqual(statusActions, ['8']);
@@ -1497,7 +1634,7 @@ test('phone verification helper fails fast when HeroSMS country list is empty', 
       heroSmsCountryId: 0,
       heroSmsCountryFallback: [],
     }),
-    /HeroSMS countries are empty/i
+    /HeroSMS 未选择国家/
   );
 });
 
@@ -1747,6 +1884,129 @@ test('phone verification helper climbs price tiers when NO_NUMBERS is returned a
   ]);
 });
 
+test('phone verification helper filters HeroSMS tiers by minimum price and ignores out-of-range preferred tier', async () => {
+  const requests = [];
+  const helpers = api.createPhoneVerificationHelpers({
+    addLog: async () => {},
+    ensureStep8SignupPageReady: async () => {},
+    fetchImpl: async (url) => {
+      const parsedUrl = new URL(url);
+      requests.push(parsedUrl);
+      const action = parsedUrl.searchParams.get('action');
+      const maxPrice = parsedUrl.searchParams.get('maxPrice');
+      if (action === 'getPrices') {
+        return {
+          ok: true,
+          text: async () => JSON.stringify({
+            52: {
+              dr: {
+                low: { cost: 0.04, count: 100 },
+                high: { cost: 0.09, count: 100 },
+              },
+            },
+          }),
+        };
+      }
+      if (action === 'getNumber' && maxPrice === '0.09') {
+        return {
+          ok: true,
+          text: async () => 'ACCESS_NUMBER:989899:66951112223',
+        };
+      }
+      throw new Error(`Unexpected HeroSMS action: ${action} @ ${maxPrice || 'no-price'}`);
+    },
+    getState: async () => ({ heroSmsApiKey: 'demo-key' }),
+    sendToContentScriptResilient: async () => ({}),
+    setState: async () => {},
+    sleepWithStop: async () => {},
+    throwIfStopped: () => {},
+  });
+
+  const activation = await helpers.requestPhoneActivation({
+    heroSmsApiKey: 'demo-key',
+    heroSmsMinPrice: '0.06',
+    heroSmsPreferredPrice: '0.04',
+  });
+
+  assert.equal(activation.activationId, '989899');
+  const actions = requests.map((requestUrl) => `${requestUrl.searchParams.get('action')}:${requestUrl.searchParams.get('maxPrice') || ''}`);
+  assert.deepStrictEqual(actions, [
+    'getPrices:',
+    'getNumber:0.09',
+  ]);
+});
+
+test('phone verification helper rejects HeroSMS WRONG_MAX_PRICE below configured minimum price', async () => {
+  const requests = [];
+  const helpers = api.createPhoneVerificationHelpers({
+    addLog: async () => {},
+    ensureStep8SignupPageReady: async () => {},
+    fetchImpl: async (url) => {
+      const parsedUrl = new URL(url);
+      requests.push(parsedUrl);
+      const action = parsedUrl.searchParams.get('action');
+      if (action === 'getPrices') {
+        return {
+          ok: true,
+          text: async () => buildHeroSmsPricesPayload({ cost: 0.08 }),
+        };
+      }
+      if (action === 'getNumber' || action === 'getNumberV2') {
+        return {
+          ok: false,
+          text: async () => 'WRONG_MAX_PRICE:0.05',
+        };
+      }
+      throw new Error(`Unexpected HeroSMS action: ${action}`);
+    },
+    getState: async () => ({ heroSmsApiKey: 'demo-key', heroSmsMinPrice: '0.07' }),
+    sendToContentScriptResilient: async () => ({}),
+    setState: async () => {},
+    sleepWithStop: async () => {},
+    throwIfStopped: () => {},
+  });
+
+  await assert.rejects(
+    helpers.requestPhoneActivation({ heroSmsApiKey: 'demo-key', heroSmsMinPrice: '0.07' }),
+    /低于当前配置的最低购买价 0\.07/
+  );
+
+  const actions = requests.map((requestUrl) => `${requestUrl.searchParams.get('action')}:${requestUrl.searchParams.get('maxPrice') || ''}`);
+  assert.deepStrictEqual(actions, [
+    'getPrices:',
+    'getNumber:0.08',
+    'getNumberV2:0.08',
+  ]);
+  assert.equal(actions.some((entry) => entry.endsWith(':0.05')), false);
+});
+
+test('phone verification helper rejects reversed price range before fetching prices', async () => {
+  let fetchCalled = false;
+  const helpers = api.createPhoneVerificationHelpers({
+    addLog: async () => {},
+    ensureStep8SignupPageReady: async () => {},
+    fetchImpl: async () => {
+      fetchCalled = true;
+      throw new Error('fetch should not run for an invalid range');
+    },
+    getState: async () => ({ heroSmsApiKey: 'demo-key' }),
+    sendToContentScriptResilient: async () => ({}),
+    setState: async () => {},
+    sleepWithStop: async () => {},
+    throwIfStopped: () => {},
+  });
+
+  await assert.rejects(
+    helpers.requestPhoneActivation({
+      heroSmsApiKey: 'demo-key',
+      heroSmsMinPrice: '0.2',
+      heroSmsMaxPrice: '0.1',
+    }),
+    /价格区间无效/
+  );
+  assert.equal(fetchCalled, false);
+});
+
 test('phone verification helper stops when WRONG_MAX_PRICE exceeds configured max price limit', async () => {
   const requests = [];
   const helpers = api.createPhoneVerificationHelpers({
@@ -1779,7 +2039,7 @@ test('phone verification helper stops when WRONG_MAX_PRICE exceeds configured ma
 
   await assert.rejects(
     helpers.requestPhoneActivation({ heroSmsApiKey: 'demo-key', heroSmsMaxPrice: '0.05' }),
-    /exceeds configured maxPrice=0\.05/i
+    /超过当前配置的价格上限 0\.05/
   );
 
   const actions = requests.map((requestUrl) => `${requestUrl.searchParams.get('action')}:${requestUrl.searchParams.get('maxPrice') || ''}`);
@@ -1948,6 +2208,178 @@ test('phone verification helper acquires a number from 5sim with fallback countr
   assert.equal(requests[3].pathname, '/v1/user/buy/activation/england/any/openai');
 });
 
+test('phone verification helper prefers phoneSmsReuseEnabled over legacy heroSmsReuseEnabled for 5sim acquisition', async () => {
+  const requests = [];
+  const helpers = api.createPhoneVerificationHelpers({
+    addLog: async () => {},
+    ensureStep8SignupPageReady: async () => {},
+    fetchImpl: async (url, options = {}) => {
+      const parsedUrl = new URL(url);
+      requests.push({
+        pathname: parsedUrl.pathname,
+        search: parsedUrl.searchParams,
+        headers: options?.headers || {},
+      });
+      if (parsedUrl.pathname === '/v1/guest/prices') {
+        return {
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify({
+            openai: {
+              thailand: {
+                any: {
+                  cost: 0.08,
+                  count: 12,
+                },
+              },
+            },
+          }),
+        };
+      }
+      if (parsedUrl.pathname === '/v1/user/buy/activation/thailand/any/openai') {
+        return {
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify({
+            id: 1234567,
+            phone: '+66880000000',
+            country: 'thailand',
+            country_name: 'Thailand',
+            product: 'openai',
+          }),
+        };
+      }
+      throw new Error(`Unexpected 5sim request: ${parsedUrl.pathname}`);
+    },
+    getState: async () => ({
+      phoneSmsProvider: '5sim',
+      fiveSimApiKey: 'five-token',
+      fiveSimCountryOrder: ['thailand'],
+      fiveSimOperator: 'any',
+      fiveSimProduct: 'openai',
+      phoneSmsReuseEnabled: false,
+      heroSmsReuseEnabled: true,
+      heroSmsActivationRetryRounds: 1,
+    }),
+    sendToContentScriptResilient: async () => ({}),
+    setState: async () => {},
+    sleepWithStop: async () => {},
+    throwIfStopped: () => {},
+  });
+
+  const activation = await helpers.requestPhoneActivation({
+    phoneSmsProvider: '5sim',
+    fiveSimApiKey: 'five-token',
+    fiveSimCountryOrder: ['thailand'],
+    fiveSimOperator: 'any',
+    fiveSimProduct: 'openai',
+    phoneSmsReuseEnabled: false,
+    heroSmsReuseEnabled: true,
+    heroSmsActivationRetryRounds: 1,
+  });
+
+  assert.deepStrictEqual(activation, {
+    activationId: '1234567',
+    phoneNumber: '+66880000000',
+    provider: '5sim',
+    serviceCode: 'openai',
+    countryId: 'thailand',
+    countryCode: 'thailand',
+    countryLabel: 'Thailand',
+    successfulUses: 0,
+    maxUses: 3,
+  });
+  assert.equal(requests[0].pathname, '/v1/guest/prices');
+  assert.equal(requests[1].pathname, '/v1/user/buy/activation/thailand/any/openai');
+  assert.equal(requests[1].search.get('reuse'), null);
+});
+
+test('phone verification helper treats fiveSimReuseEnabled as legacy-only when phoneSmsReuseEnabled is absent', async () => {
+  const requests = [];
+  const helpers = api.createPhoneVerificationHelpers({
+    addLog: async () => {},
+    ensureStep8SignupPageReady: async () => {},
+    fetchImpl: async (url, options = {}) => {
+      const parsedUrl = new URL(url);
+      requests.push({
+        pathname: parsedUrl.pathname,
+        search: parsedUrl.searchParams,
+        headers: options?.headers || {},
+      });
+      if (parsedUrl.pathname === '/v1/guest/prices') {
+        return {
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify({
+            openai: {
+              thailand: {
+                any: {
+                  cost: 0.08,
+                  count: 12,
+                },
+              },
+            },
+          }),
+        };
+      }
+      if (parsedUrl.pathname === '/v1/user/buy/activation/thailand/any/openai') {
+        return {
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify({
+            id: 1234568,
+            phone: '+66880000001',
+            country: 'thailand',
+            country_name: 'Thailand',
+            product: 'openai',
+          }),
+        };
+      }
+      throw new Error(`Unexpected 5sim request: ${parsedUrl.pathname}`);
+    },
+    getState: async () => ({
+      phoneSmsProvider: '5sim',
+      fiveSimApiKey: 'five-token',
+      fiveSimCountryOrder: ['thailand'],
+      fiveSimOperator: 'any',
+      fiveSimProduct: 'openai',
+      heroSmsReuseEnabled: true,
+      fiveSimReuseEnabled: false,
+      heroSmsActivationRetryRounds: 1,
+    }),
+    sendToContentScriptResilient: async () => ({}),
+    setState: async () => {},
+    sleepWithStop: async () => {},
+    throwIfStopped: () => {},
+  });
+
+  const activation = await helpers.requestPhoneActivation({
+    phoneSmsProvider: '5sim',
+    fiveSimApiKey: 'five-token',
+    fiveSimCountryOrder: ['thailand'],
+    fiveSimOperator: 'any',
+    fiveSimProduct: 'openai',
+    heroSmsReuseEnabled: true,
+    fiveSimReuseEnabled: false,
+    heroSmsActivationRetryRounds: 1,
+  });
+
+  assert.deepStrictEqual(activation, {
+    activationId: '1234568',
+    phoneNumber: '+66880000001',
+    provider: '5sim',
+    serviceCode: 'openai',
+    countryId: 'thailand',
+    countryCode: 'thailand',
+    countryLabel: 'Thailand',
+    successfulUses: 0,
+    maxUses: 3,
+  });
+  assert.equal(requests[0].pathname, '/v1/guest/prices');
+  assert.equal(requests[1].pathname, '/v1/user/buy/activation/thailand/any/openai');
+  assert.equal(requests[1].search.get('reuse'), '1');
+});
+
 test('phone verification helper rejects 5sim maxPrice with custom operator before buying', async () => {
   const requests = [];
   const helpers = api.createPhoneVerificationHelpers({
@@ -1980,9 +2412,80 @@ test('phone verification helper rejects 5sim maxPrice with custom operator befor
       fiveSimMaxPrice: '0.1',
       heroSmsActivationRetryRounds: 1,
     }),
-    /maxPrice only works when operator is "any"/
+    /价格上限仅支持运营商为 "any"/
   );
   assert.deepStrictEqual(requests, []);
+});
+
+test('phone verification helper keeps 5sim maxPrice independent from HeroSMS maxPrice', async () => {
+  const requests = [];
+  const helpers = api.createPhoneVerificationHelpers({
+    addLog: async () => {},
+    ensureStep8SignupPageReady: async () => {},
+    fetchImpl: async (url) => {
+      const parsedUrl = new URL(url);
+      requests.push(parsedUrl);
+      if (parsedUrl.pathname === '/v1/guest/prices') {
+        return {
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify({
+            openai: {
+              thailand: {
+                any: {
+                  low: { cost: 0.08, count: 2 },
+                },
+              },
+            },
+          }),
+        };
+      }
+      if (parsedUrl.pathname === '/v1/user/buy/activation/thailand/any/openai') {
+        if (parsedUrl.searchParams.get('maxPrice') === '0.08') {
+          return {
+            ok: true,
+            status: 200,
+            text: async () => JSON.stringify({
+              id: 900010,
+              phone: '+66951112235',
+              country: 'thailand',
+              country_name: 'Thailand',
+              product: 'openai',
+            }),
+          };
+        }
+      }
+      throw new Error(`Unexpected 5sim request: ${parsedUrl.pathname}${parsedUrl.search}`);
+    },
+    getState: async () => ({
+      phoneSmsProvider: '5sim',
+      fiveSimApiKey: 'five-token',
+      fiveSimCountryOrder: ['thailand'],
+      fiveSimOperator: 'any',
+      fiveSimProduct: 'openai',
+      heroSmsMaxPrice: '0.06',
+      heroSmsActivationRetryRounds: 1,
+    }),
+    sendToContentScriptResilient: async () => ({}),
+    setState: async () => {},
+    sleepWithStop: async () => {},
+    throwIfStopped: () => {},
+  });
+
+  const activation = await helpers.requestPhoneActivation({
+    phoneSmsProvider: '5sim',
+    fiveSimApiKey: 'five-token',
+    fiveSimCountryOrder: ['thailand'],
+    fiveSimOperator: 'any',
+    fiveSimProduct: 'openai',
+    heroSmsMaxPrice: '0.06',
+    heroSmsActivationRetryRounds: 1,
+  });
+
+  assert.equal(activation.phoneNumber, '+66951112235');
+  const buyRequests = requests.filter((entry) => entry.pathname === '/v1/user/buy/activation/thailand/any/openai');
+  assert.equal(buyRequests.length, 1);
+  assert.equal(buyRequests[0].searchParams.get('maxPrice'), '0.08');
 });
 
 test('phone verification helper honors price-priority ordering for 5sim countries', async () => {
@@ -2150,6 +2653,80 @@ test('phone verification helper tries multiple 5sim price tiers within the same 
   assert.equal(buyRequests.length, 2);
   assert.equal(buyRequests[0].includes('maxPrice=0.05'), true);
   assert.equal(buyRequests[1].includes('maxPrice=0.08'), true);
+});
+
+test('phone verification helper filters 5sim tiers by minimum price before buying', async () => {
+  const requests = [];
+  const helpers = api.createPhoneVerificationHelpers({
+    addLog: async () => {},
+    ensureStep8SignupPageReady: async () => {},
+    fetchImpl: async (url) => {
+      const parsedUrl = new URL(url);
+      requests.push(parsedUrl.pathname + parsedUrl.search);
+      if (parsedUrl.pathname === '/v1/guest/prices') {
+        return {
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify({
+            openai: {
+              thailand: {
+                any: {
+                  low: { cost: 0.05, count: 3 },
+                  high: { cost: 0.08, count: 2 },
+                },
+              },
+            },
+          }),
+        };
+      }
+      if (parsedUrl.pathname === '/v1/user/buy/activation/thailand/any/openai') {
+        const maxPrice = parsedUrl.searchParams.get('maxPrice');
+        if (maxPrice === '0.08') {
+          return {
+            ok: true,
+            status: 200,
+            text: async () => JSON.stringify({
+              id: 800002,
+              phone: '+66951112234',
+              country: 'thailand',
+              country_name: 'Thailand',
+              product: 'openai',
+            }),
+          };
+        }
+      }
+      throw new Error(`Unexpected 5sim request: ${parsedUrl.pathname}${parsedUrl.search}`);
+    },
+    getState: async () => ({
+      phoneSmsProvider: '5sim',
+      fiveSimApiKey: 'five-token',
+      fiveSimCountryOrder: ['thailand'],
+      fiveSimOperator: 'any',
+      fiveSimProduct: 'openai',
+      fiveSimMinPrice: '0.07',
+      heroSmsActivationRetryRounds: 1,
+    }),
+    sendToContentScriptResilient: async () => ({}),
+    setState: async () => {},
+    sleepWithStop: async () => {},
+    throwIfStopped: () => {},
+  });
+
+  const activation = await helpers.requestPhoneActivation({
+    phoneSmsProvider: '5sim',
+    fiveSimApiKey: 'five-token',
+    fiveSimCountryOrder: ['thailand'],
+    fiveSimOperator: 'any',
+    fiveSimProduct: 'openai',
+    fiveSimMinPrice: '0.07',
+    heroSmsActivationRetryRounds: 1,
+  });
+
+  assert.equal(activation.phoneNumber, '+66951112234');
+  const buyRequests = requests.filter((entry) => entry.startsWith('/v1/user/buy/activation/thailand/any/openai'));
+  assert.equal(buyRequests.length, 1);
+  assert.equal(buyRequests[0].includes('maxPrice=0.08'), true);
+  assert.equal(buyRequests[0].includes('maxPrice=0.05'), false);
 });
 
 test('phone verification helper polls and parses 5sim verification codes', async () => {
@@ -2487,6 +3064,96 @@ test('phone verification helper acquires a number from NexSMS with ordered fallb
   assert.equal(requests[2].search.get('countryId'), '6');
   assert.equal(requests[3].pathname, '/api/order/purchase');
   assert.equal(requests[3].body?.countryId, 6);
+});
+
+test('phone verification helper filters NexSMS tiers by minimum price before purchase', async () => {
+  const requests = [];
+  const helpers = api.createPhoneVerificationHelpers({
+    addLog: async () => {},
+    ensureStep8SignupPageReady: async () => {},
+    fetchImpl: async (url, options = {}) => {
+      const parsedUrl = new URL(url);
+      const method = String(options?.method || 'GET').toUpperCase();
+      const body = options?.body ? JSON.parse(options.body) : null;
+      requests.push({
+        pathname: parsedUrl.pathname,
+        search: parsedUrl.searchParams,
+        method,
+        body,
+      });
+
+      if (parsedUrl.pathname === '/api/getCountryByService') {
+        return {
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify({
+            code: 0,
+            data: {
+              countryId: 6,
+              countryName: 'Indonesia',
+              minPrice: 0.03,
+              priceMap: { '0.03': 4, '0.08': 2 },
+            },
+          }),
+        };
+      }
+
+      if (parsedUrl.pathname === '/api/order/purchase') {
+        if (body?.price === 0.08) {
+          return {
+            ok: true,
+            status: 200,
+            text: async () => JSON.stringify({
+              code: 0,
+              data: {
+                countryId: 6,
+                countryName: 'Indonesia',
+                serviceCode: 'ot',
+                phoneNumbers: ['+6281234567891'],
+              },
+            }),
+          };
+        }
+      }
+
+      throw new Error(`Unexpected NexSMS request: ${parsedUrl.pathname}`);
+    },
+    getState: async () => ({
+      phoneSmsProvider: 'nexsms',
+      nexSmsApiKey: 'nex-key',
+      nexSmsCountryOrder: [6],
+      nexSmsServiceCode: 'ot',
+      heroSmsMinPrice: '0.05',
+      heroSmsActivationRetryRounds: 1,
+    }),
+    sendToContentScriptResilient: async () => ({}),
+    setState: async () => {},
+    sleepWithStop: async () => {},
+    throwIfStopped: () => {},
+  });
+
+  const activation = await helpers.requestPhoneActivation({
+    phoneSmsProvider: 'nexsms',
+    nexSmsApiKey: 'nex-key',
+    nexSmsCountryOrder: [6],
+    nexSmsServiceCode: 'ot',
+    heroSmsMinPrice: '0.05',
+    heroSmsActivationRetryRounds: 1,
+  });
+
+  assert.deepStrictEqual(activation, {
+    activationId: '+6281234567891',
+    phoneNumber: '+6281234567891',
+    provider: 'nexsms',
+    serviceCode: 'ot',
+    countryId: 6,
+    countryLabel: 'Indonesia',
+    successfulUses: 0,
+    maxUses: 1,
+  });
+  const purchaseRequests = requests.filter((entry) => entry.pathname === '/api/order/purchase');
+  assert.equal(purchaseRequests.length, 1);
+  assert.equal(purchaseRequests[0].body?.price, 0.08);
 });
 
 test('phone verification helper polls and parses NexSMS verification codes', async () => {
@@ -3045,9 +3712,10 @@ test('phone verification helper replaces numbers in step 9 and stops after repla
   }
 });
 
-test('phone verification helper honors timeout-window and poll-round settings before replacing numbers', async () => {
+test('phone verification helper supplements poll rounds to cover the full wait window before replacing numbers', async () => {
   const requests = [];
   const messages = [];
+  const logs = [];
   let currentState = {
     heroSmsApiKey: 'demo-key',
     verificationResendCount: 0,
@@ -3061,7 +3729,9 @@ test('phone verification helper honors timeout-window and poll-round settings be
   };
 
   const helpers = api.createPhoneVerificationHelpers({
-    addLog: async () => {},
+    addLog: async (message) => {
+      logs.push(String(message || ''));
+    },
     ensureStep8SignupPageReady: async () => {},
     fetchImpl: async (url) => {
       const parsedUrl = new URL(url);
@@ -3120,8 +3790,16 @@ test('phone verification helper honors timeout-window and poll-round settings be
 
   assert.equal(messages.includes('RESEND_PHONE_VERIFICATION_CODE'), false);
   assert.ok(
-    requests.filter((requestUrl) => requestUrl.searchParams.get('action') === 'getStatus').length >= 2,
-    'each replacement attempt should still poll HeroSMS at least once'
+    logs.some((message) => message.includes('等待窗口 1/1') && message.includes('最多 60 次轮询')),
+    'wait log should show the effective poll count for the full window'
+  );
+  assert.ok(
+    logs.some((message) => message.includes('第 2/60 次轮询')),
+    'status logs should include consecutive poll counts instead of skipping from 1 to the last poll'
+  );
+  assert.ok(
+    requests.filter((requestUrl) => requestUrl.searchParams.get('action') === 'getStatus').length >= 60,
+    'each replacement attempt should poll long enough to cover the configured wait window'
   );
 });
 
@@ -4423,6 +5101,104 @@ test('phone verification helper gives automatic free reuse priority over paid re
   assert.equal(currentState.reusablePhoneActivation.activationId, 'paid-reuse');
 });
 
+test('phone verification helper ignores reuse entries for phone signup identity', async () => {
+  const requests = [];
+  let currentState = {
+    heroSmsApiKey: 'demo-key',
+    signupMethod: 'phone',
+    accountIdentifierType: 'phone',
+    accountIdentifier: '66959916439',
+    phoneSmsReuseEnabled: true,
+    heroSmsReuseEnabled: true,
+    freePhoneReuseEnabled: true,
+    freePhoneReuseAutoEnabled: true,
+    verificationResendCount: 0,
+    currentPhoneActivation: null,
+    reusablePhoneActivation: {
+      activationId: 'paid-reuse',
+      phoneNumber: '66950003333',
+      provider: 'hero-sms',
+      serviceCode: 'dr',
+      countryId: 52,
+      countryLabel: 'Thailand',
+      successfulUses: 0,
+      maxUses: 3,
+    },
+    freeReusablePhoneActivation: {
+      activationId: 'free-priority',
+      phoneNumber: '66950004444',
+      provider: 'hero-sms',
+      serviceCode: 'dr',
+      countryId: 52,
+      countryLabel: 'Thailand',
+      successfulUses: 0,
+      maxUses: 3,
+      source: 'free-manual-reuse',
+    },
+  };
+
+  const helpers = api.createPhoneVerificationHelpers({
+    addLog: async () => {},
+    ensureStep8SignupPageReady: async () => {},
+    fetchImpl: async (url) => {
+      const parsedUrl = new URL(url);
+      requests.push(parsedUrl);
+      const action = parsedUrl.searchParams.get('action');
+      const id = parsedUrl.searchParams.get('id');
+      if (action === 'reactivate' || id === 'free-priority') {
+        throw new Error(`phone signup identity should not use reusable activation: ${action}:${id || ''}`);
+      }
+      if (action === 'getPrices') {
+        return { ok: true, text: async () => buildHeroSmsPricesPayload() };
+      }
+      if (action === 'getNumber') {
+        return { ok: true, text: async () => 'ACCESS_NUMBER:fresh-phone:66950008888' };
+      }
+      if (action === 'getStatus' && id === 'fresh-phone') {
+        return { ok: true, text: async () => 'STATUS_OK:445566' };
+      }
+      if (action === 'setStatus' && id === 'fresh-phone') {
+        return { ok: true, text: async () => 'ACCESS_ACTIVATION' };
+      }
+      throw new Error(`Unexpected HeroSMS action: ${action}:${id || ''}`);
+    },
+    getOAuthFlowStepTimeoutMs: async (defaultTimeoutMs) => defaultTimeoutMs,
+    getState: async () => ({ ...currentState }),
+    sendToContentScriptResilient: async (_source, message) => {
+      if (message.type === 'SUBMIT_PHONE_NUMBER') {
+        return { phoneVerificationPage: true, url: 'https://auth.openai.com/phone-verification' };
+      }
+      if (message.type === 'SUBMIT_PHONE_VERIFICATION_CODE') {
+        return { success: true, consentReady: true, url: 'https://auth.openai.com/authorize' };
+      }
+      throw new Error(`Unexpected content-script message: ${message.type}`);
+    },
+    setState: async (updates) => {
+      currentState = { ...currentState, ...updates };
+    },
+    sleepWithStop: async () => {},
+    throwIfStopped: () => {},
+  });
+
+  const result = await helpers.completePhoneVerificationFlow(1, {
+    addPhonePage: true,
+    phoneVerificationPage: false,
+    url: 'https://auth.openai.com/add-phone',
+  });
+
+  assert.deepStrictEqual(result, {
+    success: true,
+    consentReady: true,
+    url: 'https://auth.openai.com/authorize',
+  });
+  assert.deepStrictEqual(
+    requests.map((requestUrl) => requestUrl.searchParams.get('action')),
+    ['getPrices', 'getNumber', 'getStatus', 'setStatus']
+  );
+  assert.equal(currentState.freeReusablePhoneActivation.activationId, 'free-priority');
+  assert.equal(currentState.reusablePhoneActivation.activationId, 'paid-reuse');
+});
+
 test('phone verification helper hands off manual-only free reuse even when automatic free reuse is enabled', async () => {
   const requests = [];
   const messages = [];
@@ -5438,9 +6214,9 @@ test('phone verification helper replaces number immediately when phone-verificat
     heroSmsCountryLabel: 'Thailand',
     verificationResendCount: 0,
     phoneVerificationReplacementLimit: 2,
-    phoneCodeWaitSeconds: 60,
+    phoneCodeWaitSeconds: 15,
     phoneCodeTimeoutWindows: 2,
-    phoneCodePollIntervalSeconds: 1,
+    phoneCodePollIntervalSeconds: 15,
     phoneCodePollMaxRounds: 1,
     currentPhoneActivation: null,
     reusablePhoneActivation: null,
@@ -5544,9 +6320,9 @@ test('phone verification helper directly navigates back to add-phone when replac
     heroSmsCountryLabel: 'Thailand',
     verificationResendCount: 0,
     phoneVerificationReplacementLimit: 2,
-    phoneCodeWaitSeconds: 60,
+    phoneCodeWaitSeconds: 15,
     phoneCodeTimeoutWindows: 2,
-    phoneCodePollIntervalSeconds: 1,
+    phoneCodePollIntervalSeconds: 15,
     phoneCodePollMaxRounds: 1,
     currentPhoneActivation: null,
     reusablePhoneActivation: null,
@@ -5709,9 +6485,9 @@ test('phone verification helper stops when add-phone recovery cannot be verified
     heroSmsCountryLabel: 'Thailand',
     verificationResendCount: 0,
     phoneVerificationReplacementLimit: 2,
-    phoneCodeWaitSeconds: 60,
+    phoneCodeWaitSeconds: 15,
     phoneCodeTimeoutWindows: 2,
-    phoneCodePollIntervalSeconds: 1,
+    phoneCodePollIntervalSeconds: 15,
     phoneCodePollMaxRounds: 1,
     currentPhoneActivation: null,
     reusablePhoneActivation: null,
@@ -5832,9 +6608,9 @@ test('signup phone verification cancels activation when resend lands on contact-
     heroSmsCountryId: 52,
     heroSmsCountryLabel: 'Thailand',
     verificationResendCount: 0,
-    phoneCodeWaitSeconds: 60,
+    phoneCodeWaitSeconds: 15,
     phoneCodeTimeoutWindows: 2,
-    phoneCodePollIntervalSeconds: 1,
+    phoneCodePollIntervalSeconds: 15,
     phoneCodePollMaxRounds: 1,
     signupPhoneActivation: {
       activationId: '920001',
@@ -5897,9 +6673,9 @@ test('signup phone verification cancels activation when resend lands on contact-
     heroSmsCountryId: 52,
     heroSmsCountryLabel: 'Thailand',
     verificationResendCount: 0,
-    phoneCodeWaitSeconds: 60,
+    phoneCodeWaitSeconds: 15,
     phoneCodeTimeoutWindows: 2,
-    phoneCodePollIntervalSeconds: 1,
+    phoneCodePollIntervalSeconds: 15,
     phoneCodePollMaxRounds: 1,
     signupPhoneActivation: {
       activationId: '930001',
@@ -5981,9 +6757,9 @@ test('signup phone verification does not treat contact-verification URL-only sna
     heroSmsCountryId: 52,
     heroSmsCountryLabel: 'Thailand',
     verificationResendCount: 0,
-    phoneCodeWaitSeconds: 60,
+    phoneCodeWaitSeconds: 15,
     phoneCodeTimeoutWindows: 2,
-    phoneCodePollIntervalSeconds: 1,
+    phoneCodePollIntervalSeconds: 15,
     phoneCodePollMaxRounds: 1,
     signupPhoneActivation: {
       activationId: '930002',
@@ -6063,9 +6839,9 @@ test('signup phone verification fails when contact-verification 500 appears afte
     heroSmsCountryId: 52,
     heroSmsCountryLabel: 'Thailand',
     verificationResendCount: 0,
-    phoneCodeWaitSeconds: 60,
+    phoneCodeWaitSeconds: 15,
     phoneCodeTimeoutWindows: 2,
-    phoneCodePollIntervalSeconds: 1,
+    phoneCodePollIntervalSeconds: 15,
     phoneCodePollMaxRounds: 1,
     signupPhoneActivation: {
       activationId: '930003',
@@ -6157,9 +6933,9 @@ test('phone verification helper skips page resend for 5sim timeouts and rotates 
     fiveSimProduct: 'openai',
     verificationResendCount: 0,
     phoneVerificationReplacementLimit: 2,
-    phoneCodeWaitSeconds: 60,
+    phoneCodeWaitSeconds: 15,
     phoneCodeTimeoutWindows: 2,
-    phoneCodePollIntervalSeconds: 1,
+    phoneCodePollIntervalSeconds: 15,
     phoneCodePollMaxRounds: 1,
     currentPhoneActivation: null,
     reusablePhoneActivation: null,
@@ -7291,6 +8067,7 @@ test('phone verification helper logs no-supply diagnostics with consecutive stre
     heroSmsCountryId: 52,
     heroSmsCountryLabel: 'Thailand',
     heroSmsCountryFallback: [],
+    heroSmsMinPrice: '0.04',
     heroSmsMaxPrice: '0.06',
     currentPhoneActivation: null,
     reusablePhoneActivation: null,
@@ -7339,14 +8116,14 @@ test('phone verification helper logs no-supply diagnostics with consecutive stre
       phoneVerificationPage: false,
       url: 'https://auth.openai.com/add-phone',
     }),
-    /all provider candidates failed to acquire number/i
+    /所有接码平台候选均未获取到手机号/
   );
 
   await runOnce();
   await runOnce();
 
   const diagnosticsLogs = logs
-    .filter((entry) => String(entry.message || '').includes('diagnostics: 无号连续失败'));
+    .filter((entry) => String(entry.message || '').includes('步骤 9 诊断：无号连续失败'));
 
   assert.equal(diagnosticsLogs.length >= 2, true);
   assert.equal(diagnosticsLogs.every((entry) => entry.options?.step === 9), true);
@@ -7354,7 +8131,15 @@ test('phone verification helper logs no-supply diagnostics with consecutive stre
   assert.equal(diagnosticsLogs.some((entry) => entry.message.includes('无号连续失败 1 次')), true);
   assert.equal(diagnosticsLogs.some((entry) => entry.message.includes('无号连续失败 2 次')), true);
   assert.equal(
-    diagnosticsLogs.some((entry) => entry.message.includes('maxPrice=0.06')),
+    diagnosticsLogs.some((entry) => entry.message.includes('价格区间=0.04~0.06')),
+    true
+  );
+  assert.equal(
+    diagnosticsLogs.some((entry) => entry.message.includes('最低价=0.04')),
+    true
+  );
+  assert.equal(
+    diagnosticsLogs.some((entry) => entry.message.includes('最高价=0.06')),
     true
   );
   assert.equal(
@@ -7363,6 +8148,63 @@ test('phone verification helper logs no-supply diagnostics with consecutive stre
   );
   assert.equal(currentState.phoneNoSupplyFailureStreak, 2);
   assert.equal(requests.some((entry) => entry.searchParams.get('action') === 'getNumber'), true);
+});
+
+test('phone verification helper localizes HeroSMS BAD_KEY acquisition failure', async () => {
+  let currentState = {
+    heroSmsApiKey: 'bad-key',
+    heroSmsCountryId: 52,
+    heroSmsCountryLabel: 'Thailand',
+    heroSmsCountryFallback: [],
+    currentPhoneActivation: null,
+    reusablePhoneActivation: null,
+    phoneVerificationReplacementLimit: 1,
+  };
+
+  const helpers = api.createPhoneVerificationHelpers({
+    addLog: async () => {},
+    ensureStep8SignupPageReady: async () => {},
+    fetchImpl: async (url) => {
+      const action = new URL(url).searchParams.get('action');
+      if (action === 'getPrices') {
+        return {
+          ok: true,
+          text: async () => buildHeroSmsPricesPayload({ country: '52', cost: 0.05, count: 20 }),
+        };
+      }
+      if (action === 'getNumber' || action === 'getNumberV2') {
+        return {
+          ok: true,
+          text: async () => 'BAD_KEY',
+        };
+      }
+      throw new Error(`Unexpected HeroSMS action: ${action}`);
+    },
+    getOAuthFlowStepTimeoutMs: async (defaultTimeoutMs) => defaultTimeoutMs,
+    getState: async () => ({ ...currentState }),
+    sendToContentScriptResilient: async (_source, message) => {
+      throw new Error(`Unexpected content-script message: ${message.type}`);
+    },
+    setState: async (updates) => {
+      currentState = { ...currentState, ...updates };
+    },
+    sleepWithStop: async () => {},
+    throwIfStopped: () => {},
+  });
+
+  await assert.rejects(
+    helpers.completePhoneVerificationFlow(1, {
+      addPhonePage: true,
+      phoneVerificationPage: false,
+      url: 'https://auth.openai.com/add-phone',
+    }),
+    (error) => {
+      assert.match(error.message, /步骤 9：所有接码平台候选均未获取到手机号/);
+      assert.match(error.message, /HeroSMS：获取手机号失败：API Key 无效（BAD_KEY）/);
+      assert.doesNotMatch(error.message, /all provider candidates failed|failed to acquire number|HeroSMS getNumber failed/i);
+      return true;
+    }
+  );
 });
 
 test('phone verification helper routes 5sim buy, check, and finish by current activation provider', async () => {

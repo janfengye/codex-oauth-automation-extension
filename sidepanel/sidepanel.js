@@ -387,6 +387,8 @@ const btnTogglePhoneVerificationSection = document.getElementById('btn-toggle-ph
 const rowPhoneVerificationFold = document.getElementById('row-phone-verification-fold');
 const inputPhoneVerificationEnabled = document.getElementById('input-phone-verification-enabled');
 const rowSignupMethod = document.getElementById('row-signup-method');
+const rowPhoneSignupReloginAfterBindEmail = document.getElementById('row-phone-signup-relogin-after-bind-email');
+const inputPhoneSignupReloginAfterBindEmail = document.getElementById('input-phone-signup-relogin-after-bind-email');
 const rowSignupPhone = document.getElementById('row-signup-phone');
 const signupMethodButtons = Array.from(document.querySelectorAll('[data-signup-method]'));
 const selectPhoneSmsProvider = document.getElementById('select-phone-sms-provider');
@@ -433,6 +435,7 @@ const inputFiveSimProduct = document.getElementById('input-five-sim-product');
 const inputNexSmsApiKey = document.getElementById('input-nex-sms-api-key');
 const btnToggleNexSmsApiKey = document.getElementById('btn-toggle-nex-sms-api-key');
 const inputNexSmsServiceCode = document.getElementById('input-nex-sms-service-code');
+const inputHeroSmsMinPrice = document.getElementById('input-hero-sms-min-price');
 const inputHeroSmsMaxPrice = document.getElementById('input-hero-sms-max-price');
 const inputHeroSmsPreferredPrice = document.getElementById('input-hero-sms-preferred-price');
 const inputPhoneReplacementLimit = document.getElementById('input-phone-replacement-limit');
@@ -518,10 +521,14 @@ const SIGNUP_METHOD_EMAIL = 'email';
 const SIGNUP_METHOD_PHONE = 'phone';
 const DEFAULT_SIGNUP_METHOD = SIGNUP_METHOD_EMAIL;
 const DEFAULT_ACTIVE_FLOW_ID = 'openai';
+const DEFAULT_PHONE_SIGNUP_RELOGIN_AFTER_BIND_EMAIL_ENABLED = false;
+const PHONE_SIGNUP_REUSE_LOCK_TITLE = '手机号注册流程不使用号码复用，切回邮箱注册后会恢复原设置';
 let latestState = null;
 let currentPlusModeEnabled = false;
 let currentPlusPaymentMethod = DEFAULT_PLUS_PAYMENT_METHOD;
 let currentSignupMethod = DEFAULT_SIGNUP_METHOD;
+let currentPhoneSignupReloginAfterBindEmailEnabled = DEFAULT_PHONE_SIGNUP_RELOGIN_AFTER_BIND_EMAIL_ENABLED;
+let phoneSignupReuseUiWasLocked = false;
 let lastConfirmedOperationDelayEnabled = true;
 let heroSmsCountrySelectionOrder = [];
 let phoneSmsProviderOrderSelection = [];
@@ -541,10 +548,19 @@ const nexSmsCountrySearchTextById = new Map();
 let stepDefinitions = getStepDefinitionsForMode(false, {
   plusPaymentMethod: currentPlusPaymentMethod,
   signupMethod: currentSignupMethod,
+  phoneSignupReloginAfterBindEmailEnabled: currentPhoneSignupReloginAfterBindEmailEnabled,
+});
+let workflowNodes = getWorkflowNodesForMode(false, {
+  plusPaymentMethod: currentPlusPaymentMethod,
+  signupMethod: currentSignupMethod,
+  phoneSignupReloginAfterBindEmailEnabled: currentPhoneSignupReloginAfterBindEmailEnabled,
 });
 let STEP_IDS = stepDefinitions.map((step) => Number(step.id)).filter(Number.isFinite);
 let STEP_DEFAULT_STATUSES = Object.fromEntries(STEP_IDS.map((stepId) => [stepId, 'pending']));
 let SKIPPABLE_STEPS = new Set(STEP_IDS);
+let NODE_IDS = workflowNodes.map((node) => String(node.nodeId || '').trim()).filter(Boolean);
+let NODE_DEFAULT_STATUSES = Object.fromEntries(NODE_IDS.map((nodeId) => [nodeId, 'pending']));
+let SKIPPABLE_NODES = new Set(NODE_IDS);
 const AUTO_DELAY_MIN_MINUTES = 1;
 const AUTO_DELAY_MAX_MINUTES = 1440;
 const AUTO_DELAY_DEFAULT_MINUTES = 30;
@@ -798,6 +814,9 @@ function getStepDefinitionsForMode(plusModeEnabled = false, options = {}) {
   const rawSignupMethod = typeof options === 'string'
     ? currentSignupMethod
     : (options.signupMethod || currentSignupMethod || DEFAULT_SIGNUP_METHOD);
+  const phoneSignupReloginAfterBindEmailEnabled = typeof options === 'string'
+    ? currentPhoneSignupReloginAfterBindEmailEnabled
+    : Boolean(options.phoneSignupReloginAfterBindEmailEnabled ?? currentPhoneSignupReloginAfterBindEmailEnabled);
   const activeFlowId = typeof options === 'string'
     ? ((typeof latestState !== 'undefined' ? latestState?.activeFlowId : '') || defaultFlowId)
     : (options.activeFlowId || (typeof latestState !== 'undefined' ? latestState?.activeFlowId : '') || defaultFlowId);
@@ -806,6 +825,7 @@ function getStepDefinitionsForMode(plusModeEnabled = false, options = {}) {
     plusModeEnabled,
     plusPaymentMethod: normalizePlusPaymentMethod(rawPaymentMethod),
     signupMethod: normalizeSignupMethod(rawSignupMethod),
+    phoneSignupReloginAfterBindEmailEnabled,
   }) || [])
     .sort((left, right) => {
       const leftOrder = Number.isFinite(left.order) ? left.order : left.id;
@@ -813,6 +833,46 @@ function getStepDefinitionsForMode(plusModeEnabled = false, options = {}) {
       if (leftOrder !== rightOrder) return leftOrder - rightOrder;
       return left.id - right.id;
     });
+}
+
+function getWorkflowNodesForMode(plusModeEnabled = false, options = {}) {
+  const defaultFlowId = typeof DEFAULT_ACTIVE_FLOW_ID !== 'undefined' ? DEFAULT_ACTIVE_FLOW_ID : 'openai';
+  const defaultMethod = typeof DEFAULT_PLUS_PAYMENT_METHOD !== 'undefined' ? DEFAULT_PLUS_PAYMENT_METHOD : 'paypal';
+  const rawPaymentMethod = typeof options === 'string'
+    ? options
+    : (options.plusPaymentMethod || currentPlusPaymentMethod || defaultMethod);
+  const rawSignupMethod = typeof options === 'string'
+    ? currentSignupMethod
+    : (options.signupMethod || currentSignupMethod || DEFAULT_SIGNUP_METHOD);
+  const phoneSignupReloginAfterBindEmailEnabled = typeof options === 'string'
+    ? currentPhoneSignupReloginAfterBindEmailEnabled
+    : Boolean(options.phoneSignupReloginAfterBindEmailEnabled ?? currentPhoneSignupReloginAfterBindEmailEnabled);
+  const activeFlowId = typeof options === 'string'
+    ? ((typeof latestState !== 'undefined' ? latestState?.activeFlowId : '') || defaultFlowId)
+    : (options.activeFlowId || (typeof latestState !== 'undefined' ? latestState?.activeFlowId : '') || defaultFlowId);
+  const nodes = window.MultiPageStepDefinitions?.getNodes?.({
+    activeFlowId: String(activeFlowId || '').trim().toLowerCase() || defaultFlowId,
+    plusModeEnabled,
+    plusPaymentMethod: normalizePlusPaymentMethod(rawPaymentMethod),
+    signupMethod: normalizeSignupMethod(rawSignupMethod),
+    phoneSignupReloginAfterBindEmailEnabled,
+  });
+  if (Array.isArray(nodes) && nodes.length) {
+    return nodes.slice().sort((left, right) => {
+      const leftOrder = Number.isFinite(Number(left.displayOrder)) ? Number(left.displayOrder) : Number(left.legacyStepId);
+      const rightOrder = Number.isFinite(Number(right.displayOrder)) ? Number(right.displayOrder) : Number(right.legacyStepId);
+      if (leftOrder !== rightOrder) return leftOrder - rightOrder;
+      return String(left.nodeId || '').localeCompare(String(right.nodeId || ''));
+    });
+  }
+
+  return getStepDefinitionsForMode(plusModeEnabled, options).map((step) => ({
+    legacyStepId: Number(step.id),
+    nodeId: String(step.key || '').trim(),
+    title: step.title,
+    displayOrder: Number.isFinite(Number(step.order)) ? Number(step.order) : Number(step.id),
+    executeKey: String(step.key || '').trim(),
+  })).filter((node) => node.nodeId);
 }
 
 function getStepIdByKeyForCurrentMode(stepKey = '') {
@@ -824,6 +884,29 @@ function getStepIdByKeyForCurrentMode(stepKey = '') {
   return Number(match?.id) || 0;
 }
 
+function getNodeIdByStepForCurrentMode(step) {
+  const numericStep = Number(step);
+  const node = (workflowNodes || []).find((candidate) => Number(candidate?.legacyStepId) === numericStep);
+  if (node?.nodeId) {
+    return String(node.nodeId).trim();
+  }
+  const definition = (stepDefinitions || []).find((candidate) => Number(candidate?.id) === numericStep);
+  return String(definition?.key || '').trim();
+}
+
+function getStepIdByNodeIdForCurrentMode(nodeId = '') {
+  const normalizedNodeId = String(nodeId || '').trim();
+  if (!normalizedNodeId) {
+    return 0;
+  }
+  const node = (workflowNodes || []).find((candidate) => String(candidate?.nodeId || '').trim() === normalizedNodeId);
+  const legacyStepId = Number(node?.legacyStepId);
+  if (Number.isInteger(legacyStepId) && legacyStepId > 0) {
+    return legacyStepId;
+  }
+  return getStepIdByKeyForCurrentMode(normalizedNodeId);
+}
+
 function rebuildStepDefinitionState(plusModeEnabled = false, options = {}) {
   currentPlusModeEnabled = Boolean(plusModeEnabled);
   const defaultMethod = typeof DEFAULT_PLUS_PAYMENT_METHOD !== 'undefined' ? DEFAULT_PLUS_PAYMENT_METHOD : 'paypal';
@@ -833,16 +916,46 @@ function rebuildStepDefinitionState(plusModeEnabled = false, options = {}) {
   const rawSignupMethod = typeof options === 'string'
     ? currentSignupMethod
     : (options.signupMethod || currentSignupMethod || DEFAULT_SIGNUP_METHOD);
+  const phoneSignupReloginAfterBindEmailEnabled = typeof options === 'string'
+    ? currentPhoneSignupReloginAfterBindEmailEnabled
+    : Boolean(options.phoneSignupReloginAfterBindEmailEnabled ?? currentPhoneSignupReloginAfterBindEmailEnabled);
   currentPlusPaymentMethod = normalizePlusPaymentMethod(rawPaymentMethod);
   currentSignupMethod = normalizeSignupMethod(rawSignupMethod);
+  currentPhoneSignupReloginAfterBindEmailEnabled = phoneSignupReloginAfterBindEmailEnabled;
   stepDefinitions = getStepDefinitionsForMode(currentPlusModeEnabled, {
     activeFlowId: options?.activeFlowId,
     plusPaymentMethod: currentPlusPaymentMethod,
     signupMethod: currentSignupMethod,
+    phoneSignupReloginAfterBindEmailEnabled: currentPhoneSignupReloginAfterBindEmailEnabled,
   });
+  const nextWorkflowNodes = typeof getWorkflowNodesForMode === 'function'
+    ? getWorkflowNodesForMode(currentPlusModeEnabled, {
+      activeFlowId: options?.activeFlowId,
+      plusPaymentMethod: currentPlusPaymentMethod,
+      signupMethod: currentSignupMethod,
+      phoneSignupReloginAfterBindEmailEnabled: currentPhoneSignupReloginAfterBindEmailEnabled,
+    })
+    : stepDefinitions.map((step) => ({
+      legacyStepId: Number(step.id),
+      nodeId: String(step.key || step.id || '').trim(),
+      title: step.title,
+      displayOrder: Number.isFinite(Number(step.order)) ? Number(step.order) : Number(step.id),
+    }));
+  if (typeof workflowNodes !== 'undefined') {
+    workflowNodes = nextWorkflowNodes;
+  }
   STEP_IDS = stepDefinitions.map((step) => Number(step.id)).filter(Number.isFinite);
   STEP_DEFAULT_STATUSES = Object.fromEntries(STEP_IDS.map((stepId) => [stepId, 'pending']));
   SKIPPABLE_STEPS = new Set(STEP_IDS);
+  if (typeof NODE_IDS !== 'undefined') {
+    NODE_IDS = nextWorkflowNodes.map((node) => String(node.nodeId || '').trim()).filter(Boolean);
+  }
+  if (typeof NODE_DEFAULT_STATUSES !== 'undefined') {
+    NODE_DEFAULT_STATUSES = Object.fromEntries((typeof NODE_IDS !== 'undefined' ? NODE_IDS : []).map((nodeId) => [nodeId, 'pending']));
+  }
+  if (typeof SKIPPABLE_NODES !== 'undefined') {
+    SKIPPABLE_NODES = new Set(typeof NODE_IDS !== 'undefined' ? NODE_IDS : []);
+  }
 }
 const CONTRIBUTION_CONTENT_PROMPT_DISMISSED_VERSION_STORAGE_KEY = 'multipage-contribution-content-prompt-dismissed-version';
 const AUTO_RUN_FALLBACK_RISK_WARNING_MIN_RUNS = 3;
@@ -1188,7 +1301,7 @@ function shouldAttachAutomationWindow(message = {}) {
     return false;
   }
   return [
-    'EXECUTE_STEP',
+    'EXECUTE_NODE',
     'AUTO_RUN',
     'SCHEDULE_AUTO_RUN',
     'RESUME_AUTO_RUN',
@@ -1310,7 +1423,7 @@ const tempEmailDomainPicker = createEditableListPicker({
   trigger: btnTempEmailDomainMenu,
   current: tempEmailDomainCurrent,
   menu: tempEmailDomainMenu,
-  emptyLabel: '请先添加域名',
+  emptyLabel: '请先更新域名',
   itemLabel: '域名',
   normalizeItems: normalizeCloudflareTempEmailDomains,
   normalizeValue: normalizeCloudflareTempEmailDomainValue,
@@ -2110,31 +2223,64 @@ function isDoneStatus(status) {
   return status === 'completed' || status === 'manual_completed' || status === 'skipped';
 }
 
+function escapeCssValue(value = '') {
+  const raw = String(value || '');
+  if (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') {
+    return CSS.escape(raw);
+  }
+  return raw.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+}
+
+function getNodeStatuses(state = latestState) {
+  const merged = { ...NODE_DEFAULT_STATUSES, ...(state?.nodeStatuses || {}) };
+  return Object.fromEntries(NODE_IDS.map((nodeId) => [nodeId, merged[nodeId] || 'pending']));
+}
+
 function getStepStatuses(state = latestState) {
-  const merged = { ...STEP_DEFAULT_STATUSES, ...(state?.stepStatuses || {}) };
+  const merged = { ...STEP_DEFAULT_STATUSES };
+  if (typeof getNodeStatuses === 'function') {
+    const nodeStatuses = getNodeStatuses(state);
+    for (const [nodeId, status] of Object.entries(nodeStatuses)) {
+      const step = getStepIdByNodeIdForCurrentMode(nodeId);
+      if (step) {
+        merged[step] = status || 'pending';
+      }
+    }
+  }
   return Object.fromEntries(STEP_IDS.map((stepId) => [stepId, merged[stepId] || 'pending']));
 }
 
-function getFirstUnfinishedStep(state = latestState) {
-  const statuses = getStepStatuses(state);
-  for (const step of STEP_IDS) {
-    if (!isDoneStatus(statuses[step])) {
-      return step;
+function getFirstUnfinishedNode(state = latestState) {
+  const statuses = getNodeStatuses(state);
+  for (const nodeId of NODE_IDS) {
+    if (!isDoneStatus(statuses[nodeId])) {
+      return nodeId;
     }
   }
-  return null;
+  return '';
+}
+
+function getFirstUnfinishedStep(state = latestState) {
+  const nodeId = getFirstUnfinishedNode(state);
+  return nodeId ? getStepIdByNodeIdForCurrentMode(nodeId) : null;
+}
+
+function getRunningNodes(state = latestState) {
+  const statuses = getNodeStatuses(state);
+  return Object.entries(statuses)
+    .filter(([, status]) => status === 'running')
+    .map(([nodeId]) => nodeId);
 }
 
 function getRunningSteps(state = latestState) {
-  const statuses = getStepStatuses(state);
-  return Object.entries(statuses)
-    .filter(([, status]) => status === 'running')
-    .map(([step]) => Number(step))
+  return getRunningNodes(state)
+    .map((nodeId) => getStepIdByNodeIdForCurrentMode(nodeId))
+    .filter((step) => Number.isInteger(step) && step > 0)
     .sort((a, b) => a - b);
 }
 
 function hasSavedProgress(state = latestState) {
-  const statuses = getStepStatuses(state);
+  const statuses = getNodeStatuses(state);
   return Object.values(statuses).some((status) => status !== 'pending');
 }
 
@@ -2149,14 +2295,14 @@ function shouldOfferAutoModeChoice(state = latestState) {
 }
 
 function syncLatestState(nextState) {
-  const mergedStepStatuses = nextState?.stepStatuses
-    ? { ...STEP_DEFAULT_STATUSES, ...(latestState?.stepStatuses || {}), ...nextState.stepStatuses }
-    : getStepStatuses(latestState);
+  const mergedNodeStatuses = nextState?.nodeStatuses
+    ? { ...NODE_DEFAULT_STATUSES, ...(latestState?.nodeStatuses || {}), ...nextState.nodeStatuses }
+    : getNodeStatuses(latestState);
 
   latestState = {
     ...(latestState || {}),
     ...(nextState || {}),
-    stepStatuses: mergedStepStatuses,
+    nodeStatuses: mergedNodeStatuses,
   };
 
   renderAccountRecords(latestState);
@@ -2981,16 +3127,11 @@ function setCloudflareDomainEditMode(editing, options = {}) {
 
 function setCloudflareTempEmailDomainEditMode(editing, options = {}) {
   const { clearInput = false } = options;
-  cloudflareTempEmailDomainEditMode = Boolean(editing);
-  tempEmailDomainPicker.setVisible(!cloudflareTempEmailDomainEditMode);
-  inputTempEmailDomain.style.display = cloudflareTempEmailDomainEditMode ? '' : 'none';
-  btnTempEmailDomainMode.textContent = cloudflareTempEmailDomainEditMode ? '保存' : '添加';
-  if (cloudflareTempEmailDomainEditMode) {
-    if (clearInput) {
-      inputTempEmailDomain.value = '';
-    }
-    inputTempEmailDomain.focus();
-  } else if (clearInput) {
+  cloudflareTempEmailDomainEditMode = false;
+  tempEmailDomainPicker.setVisible(true);
+  inputTempEmailDomain.style.display = 'none';
+  btnTempEmailDomainMode.textContent = '更新';
+  if (clearInput) {
     inputTempEmailDomain.value = '';
   }
 }
@@ -3338,13 +3479,33 @@ function collectSettingsPayload() {
   const defaultPhoneCodePollMaxRounds = typeof DEFAULT_PHONE_CODE_POLL_MAX_ROUNDS !== 'undefined'
     ? DEFAULT_PHONE_CODE_POLL_MAX_ROUNDS
     : 12;
-  const heroSmsReuseEnabledValue = typeof inputHeroSmsReuseEnabled !== 'undefined' && inputHeroSmsReuseEnabled
+  const selectedSignupMethod = typeof getSelectedSignupMethod === 'function'
+    ? getSelectedSignupMethod()
+    : (
+      (typeof normalizeSignupMethod === 'function'
+        ? normalizeSignupMethod(latestState?.signupMethod)
+        : (String(latestState?.signupMethod || '').trim().toLowerCase() === 'phone' ? 'phone' : 'email'))
+    );
+  const phoneSignupReuseLocked = typeof isPhoneSignupReuseLocked === 'function'
+    ? isPhoneSignupReuseLocked(latestState, { signupMethod: selectedSignupMethod })
+    : selectedSignupMethod === 'phone';
+  const phoneSmsReuseEnabledValue = phoneSignupReuseLocked
+    ? getStoredPhoneSmsReuseEnabled(latestState)
+    : typeof inputHeroSmsReuseEnabled !== 'undefined' && inputHeroSmsReuseEnabled
     ? normalizeHeroSmsReuseEnabledValue(inputHeroSmsReuseEnabled.checked)
-    : defaultHeroSmsReuseEnabled;
-  const freePhoneReuseEnabledValue = typeof inputFreePhoneReuseEnabled !== 'undefined' && inputFreePhoneReuseEnabled
+    : normalizeHeroSmsReuseEnabledValue(
+      latestState?.phoneSmsReuseEnabled,
+      latestState?.heroSmsReuseEnabled
+    );
+  const heroSmsReuseEnabledValue = phoneSmsReuseEnabledValue;
+  const freePhoneReuseEnabledValue = phoneSignupReuseLocked
+    ? getStoredFreePhoneReuseEnabled(latestState)
+    : typeof inputFreePhoneReuseEnabled !== 'undefined' && inputFreePhoneReuseEnabled
     ? Boolean(inputFreePhoneReuseEnabled.checked)
     : Boolean(latestState?.freePhoneReuseEnabled);
-  const freePhoneReuseAutoEnabledValue = typeof inputFreePhoneReuseAutoEnabled !== 'undefined' && inputFreePhoneReuseAutoEnabled
+  const freePhoneReuseAutoEnabledValue = phoneSignupReuseLocked
+    ? getStoredFreePhoneReuseAutoEnabled(latestState)
+    : typeof inputFreePhoneReuseAutoEnabled !== 'undefined' && inputFreePhoneReuseAutoEnabled
     ? Boolean(inputFreePhoneReuseAutoEnabled.checked)
     : Boolean(latestState?.freePhoneReuseAutoEnabled);
   const defaultHeroSmsAcquirePriority = typeof DEFAULT_HERO_SMS_ACQUIRE_PRIORITY !== 'undefined'
@@ -3360,12 +3521,33 @@ function collectSettingsPayload() {
   const currentPhoneSmsMaxPriceValue = typeof inputHeroSmsMaxPrice !== 'undefined' && inputHeroSmsMaxPrice
     ? normalizePhoneSmsMaxPriceValue(inputHeroSmsMaxPrice.value, phoneSmsProviderValue)
     : '';
+  const normalizePhoneSmsMinPriceValueSafe = typeof normalizePhoneSmsMinPriceValue === 'function'
+    ? normalizePhoneSmsMinPriceValue
+    : ((value = '', provider = phoneSmsProviderValue) => {
+      const normalizedProvider = normalizePhoneSmsProvider(provider);
+      if (normalizedProvider === PHONE_SMS_PROVIDER_FIVE_SIM && typeof normalizeFiveSimMaxPriceValue === 'function') {
+        return normalizeFiveSimMaxPriceValue(value);
+      }
+      if (typeof normalizeHeroSmsMaxPriceValue === 'function') {
+        return normalizeHeroSmsMaxPriceValue(value);
+      }
+      return String(value || '').trim();
+    });
+  const currentPhoneSmsMinPriceValue = typeof inputHeroSmsMinPrice !== 'undefined' && inputHeroSmsMinPrice
+    ? normalizePhoneSmsMinPriceValueSafe(inputHeroSmsMinPrice.value, phoneSmsProviderValue)
+    : '';
   const heroSmsMaxPriceValue = phoneSmsProviderValue === PHONE_SMS_PROVIDER_HERO_SMS
     ? currentPhoneSmsMaxPriceValue
     : normalizeHeroSmsMaxPriceValue(latestState?.heroSmsMaxPrice || '');
   const fiveSimMaxPriceValue = phoneSmsProviderValue === PHONE_SMS_PROVIDER_FIVE_SIM
     ? currentPhoneSmsMaxPriceValue
     : normalizeFiveSimMaxPriceValue(latestState?.fiveSimMaxPrice || '');
+  const heroSmsMinPriceValue = phoneSmsProviderValue === PHONE_SMS_PROVIDER_FIVE_SIM
+    ? normalizePhoneSmsMinPriceValueSafe(latestState?.heroSmsMinPrice || '', PHONE_SMS_PROVIDER_HERO_SMS)
+    : currentPhoneSmsMinPriceValue;
+  const fiveSimMinPriceValue = phoneSmsProviderValue === PHONE_SMS_PROVIDER_FIVE_SIM
+    ? currentPhoneSmsMinPriceValue
+    : normalizePhoneSmsMinPriceValueSafe(latestState?.fiveSimMinPrice || '', PHONE_SMS_PROVIDER_FIVE_SIM);
   const defaultFiveSimProduct = typeof DEFAULT_FIVE_SIM_PRODUCT !== 'undefined'
     ? DEFAULT_FIVE_SIM_PRODUCT
     : 'openai';
@@ -3412,7 +3594,9 @@ function collectSettingsPayload() {
   const heroSmsPreferredPriceValue = typeof inputHeroSmsPreferredPrice !== 'undefined' && inputHeroSmsPreferredPrice
     ? normalizeHeroSmsMaxPriceValue(inputHeroSmsPreferredPrice.value)
     : normalizeHeroSmsMaxPriceValue(latestState?.heroSmsPreferredPrice || '');
-  const phonePreferredActivationValue = typeof getSelectedPhonePreferredActivation === 'function'
+  const phonePreferredActivationValue = phoneSignupReuseLocked
+    ? (latestState?.phonePreferredActivation ? { ...latestState.phonePreferredActivation } : null)
+    : typeof getSelectedPhonePreferredActivation === 'function'
     ? getSelectedPhonePreferredActivation()
     : null;
   const phoneVerificationReplacementLimitValue = typeof inputPhoneReplacementLimit !== 'undefined' && inputPhoneReplacementLimit
@@ -3503,13 +3687,6 @@ function collectSettingsPayload() {
   const currentPayPalAccount = typeof getCurrentPayPalAccount === 'function'
     ? getCurrentPayPalAccount(latestState)
     : payPalAccounts.find((account) => account?.id === String(latestState?.currentPayPalAccountId || '').trim()) || null;
-  const selectedSignupMethod = typeof getSelectedSignupMethod === 'function'
-    ? getSelectedSignupMethod()
-    : (
-      (typeof normalizeSignupMethod === 'function'
-        ? normalizeSignupMethod(latestState?.signupMethod)
-        : (String(latestState?.signupMethod || '').trim().toLowerCase() === 'phone' ? 'phone' : 'email'))
-    );
   const normalizePanelModeSafe = typeof normalizePanelMode === 'function'
     ? normalizePanelMode
     : ((value = '') => {
@@ -3773,6 +3950,9 @@ function collectSettingsPayload() {
       : true,
     phoneVerificationEnabled: effectivePhoneVerificationEnabled,
     signupMethod: effectiveSignupMethod,
+    phoneSignupReloginAfterBindEmailEnabled: typeof inputPhoneSignupReloginAfterBindEmail !== 'undefined' && inputPhoneSignupReloginAfterBindEmail
+      ? Boolean(inputPhoneSignupReloginAfterBindEmail.checked)
+      : false,
     phoneSmsProvider: phoneSmsProviderValue,
     phoneSmsProviderOrder: phoneSmsProviderOrderValue,
     verificationResendCount: normalizeVerificationResendCount(
@@ -3787,10 +3967,12 @@ function collectSettingsPayload() {
     nexSmsApiKey: nexSmsApiKeyValue,
     nexSmsCountryOrder: nexSmsCountryOrderValue,
     nexSmsServiceCode: nexSmsServiceCodeValue,
+    phoneSmsReuseEnabled: phoneSmsReuseEnabledValue,
     heroSmsReuseEnabled: heroSmsReuseEnabledValue,
     freePhoneReuseEnabled: freePhoneReuseEnabledValue,
     freePhoneReuseAutoEnabled: freePhoneReuseAutoEnabledValue,
     heroSmsAcquirePriority: heroSmsAcquirePriorityValue,
+    heroSmsMinPrice: heroSmsMinPriceValue,
     heroSmsMaxPrice: heroSmsMaxPriceValue,
     heroSmsPreferredPrice: heroSmsPreferredPriceValue,
     phonePreferredActivation: phonePreferredActivationValue,
@@ -3806,6 +3988,7 @@ function collectSettingsPayload() {
     fiveSimCountryLabel: fiveSimCountry.label,
     fiveSimCountryFallback,
     fiveSimMaxPrice: fiveSimMaxPriceValue,
+    fiveSimMinPrice: fiveSimMinPriceValue,
   };
 }
 
@@ -3856,15 +4039,22 @@ function normalizeAccountRunHistoryHelperBaseUrlValue(value = '') {
 
 
 function normalizePhoneSmsProvider(value = '') {
-  if (typeof window !== 'undefined' && window.PhoneSmsProviderRegistry?.normalizeProviderId) {
-    return window.PhoneSmsProviderRegistry.normalizeProviderId(value);
+  const rootScope = typeof window !== 'undefined' ? window : globalThis;
+  if (rootScope.PhoneSmsProviderRegistry?.normalizeProviderId) {
+    return rootScope.PhoneSmsProviderRegistry.normalizeProviderId(value);
   }
+  const nexSmsProvider = typeof PHONE_SMS_PROVIDER_NEXSMS !== 'undefined'
+    ? PHONE_SMS_PROVIDER_NEXSMS
+    : 'nexsms';
   const normalized = String(value || '').trim().toLowerCase();
-  return normalized === PHONE_SMS_PROVIDER_FIVE_SIM
-    ? PHONE_SMS_PROVIDER_FIVE_SIM
-    : PHONE_SMS_PROVIDER_HERO_SMS;
+  if (normalized === PHONE_SMS_PROVIDER_FIVE_SIM) {
+    return PHONE_SMS_PROVIDER_FIVE_SIM;
+  }
+  if (normalized === nexSmsProvider) {
+    return nexSmsProvider;
+  }
+  return PHONE_SMS_PROVIDER_HERO_SMS;
 }
-
 function setPhoneSmsProviderSelectValue(provider) {
   const normalizedProvider = normalizePhoneSmsProvider(provider);
   if (selectPhoneSmsProvider) {
@@ -3914,6 +4104,13 @@ function normalizePhoneSmsCountryLabel(value = '', provider = getSelectedPhoneSm
 }
 
 function normalizePhoneSmsMaxPriceValue(value = '', provider = getSelectedPhoneSmsProvider()) {
+  if (normalizePhoneSmsProvider(provider) === PHONE_SMS_PROVIDER_FIVE_SIM) {
+    return normalizeFiveSimMaxPriceValue(value);
+  }
+  return normalizeHeroSmsMaxPriceValue(value);
+}
+
+function normalizePhoneSmsMinPriceValue(value = '', provider = getSelectedPhoneSmsProvider()) {
   if (normalizePhoneSmsProvider(provider) === PHONE_SMS_PROVIDER_FIVE_SIM) {
     return normalizeFiveSimMaxPriceValue(value);
   }
@@ -4047,21 +4244,21 @@ function normalizeHeroSmsMaxPriceValue(value = '') {
 }
 
 function normalizePhoneSmsProviderValue(value = '') {
-  const normalized = String(value || '').trim().toLowerCase();
-  if (normalized === PHONE_SMS_PROVIDER_FIVE_SIM) {
-    return PHONE_SMS_PROVIDER_FIVE_SIM;
+  const rootScope = typeof window !== 'undefined' ? window : globalThis;
+  if (rootScope.PhoneSmsProviderRegistry?.normalizeProviderId) {
+    return rootScope.PhoneSmsProviderRegistry.normalizeProviderId(value);
   }
-  if (normalized === PHONE_SMS_PROVIDER_NEXSMS) {
-    return PHONE_SMS_PROVIDER_NEXSMS;
-  }
-  return PHONE_SMS_PROVIDER_HERO;
+  return normalizePhoneSmsProvider(value);
 }
-
 function normalizePhoneSmsProviderOrderValue(value = [], fallbackOrder = []) {
+  const rootScope = typeof window !== 'undefined' ? window : globalThis;
+  if (rootScope.PhoneSmsProviderRegistry?.normalizeProviderOrder) {
+    return rootScope.PhoneSmsProviderRegistry.normalizeProviderOrder(value, fallbackOrder);
+  }
   const source = Array.isArray(value)
     ? value
     : String(value || '')
-      .split(/[\r\n,，;；|/]+/)
+      .split(/[\r\n,]+/)
       .map((entry) => String(entry || '').trim())
       .filter(Boolean);
   const normalized = [];
@@ -4094,7 +4291,6 @@ function normalizePhoneSmsProviderOrderValue(value = [], fallbackOrder = []) {
   });
   return fallbackNormalized.slice(0, 3);
 }
-
 function formatPhoneSmsProviderOrderSummary(order = []) {
   const normalized = normalizePhoneSmsProviderOrderValue(order, []);
   if (!normalized.length) {
@@ -4598,8 +4794,11 @@ function normalizePhoneCodePollMaxRoundsValue(value, fallback = DEFAULT_PHONE_CO
   return Math.max(PHONE_CODE_POLL_MAX_ROUNDS_MIN, Math.min(PHONE_CODE_POLL_MAX_ROUNDS_MAX, parsed));
 }
 
-function normalizeHeroSmsReuseEnabledValue(value) {
+function normalizeHeroSmsReuseEnabledValue(value, fallbackValue = undefined) {
   if (value === undefined || value === null) {
+    if (fallbackValue !== undefined && fallbackValue !== null) {
+      return Boolean(fallbackValue);
+    }
     return DEFAULT_HERO_SMS_REUSE_ENABLED;
   }
   return Boolean(value);
@@ -5059,6 +5258,97 @@ function summarizeHeroSmsPreviewError(payload, responseStatus = 0) {
     return `HTTP ${responseStatus}`;
   }
   return text || '未知错误';
+}
+
+function resolvePhoneSmsPricePreviewRange(provider = '') {
+  const activeProvider = provider || (
+    typeof getSelectedPhoneSmsProvider === 'function'
+      ? getSelectedPhoneSmsProvider()
+      : (typeof DEFAULT_PHONE_SMS_PROVIDER !== 'undefined' ? DEFAULT_PHONE_SMS_PROVIDER : 'hero-sms')
+  );
+  const rawMinPrice = typeof inputHeroSmsMinPrice !== 'undefined' && inputHeroSmsMinPrice
+    ? inputHeroSmsMinPrice.value
+    : '';
+  const rawMaxPrice = typeof inputHeroSmsMaxPrice !== 'undefined' && inputHeroSmsMaxPrice
+    ? inputHeroSmsMaxPrice.value
+    : '';
+  const minPriceText = typeof normalizePhoneSmsMinPriceValue === 'function'
+    ? normalizePhoneSmsMinPriceValue(rawMinPrice, activeProvider)
+    : normalizeHeroSmsMaxPriceValue(rawMinPrice);
+  const maxPriceText = typeof normalizePhoneSmsMaxPriceValue === 'function'
+    ? normalizePhoneSmsMaxPriceValue(rawMaxPrice, activeProvider)
+    : normalizeHeroSmsMaxPriceValue(rawMaxPrice);
+  const minPrice = minPriceText ? Number(minPriceText) : null;
+  const maxPrice = maxPriceText ? Number(maxPriceText) : null;
+  return {
+    minPrice,
+    maxPrice,
+    hasMinPrice: Number.isFinite(minPrice) && minPrice > 0,
+    hasMaxPrice: Number.isFinite(maxPrice) && maxPrice > 0,
+    invalid: Number.isFinite(minPrice) && minPrice > 0
+      && Number.isFinite(maxPrice) && maxPrice > 0
+      && minPrice > maxPrice,
+  };
+}
+
+function isPhoneSmsPriceWithinPreviewRange(price, range = {}) {
+  const numeric = Number(price);
+  if (!Number.isFinite(numeric) || numeric <= 0 || range?.invalid) {
+    return false;
+  }
+  const normalized = Math.round(numeric * 10000) / 10000;
+  if (range?.hasMinPrice && normalized < Number(range.minPrice)) {
+    return false;
+  }
+  if (range?.hasMaxPrice && normalized > Number(range.maxPrice)) {
+    return false;
+  }
+  return true;
+}
+
+function filterPhoneSmsPriceEntriesForPreviewRange(entries = [], range = {}) {
+  if (!range?.hasMinPrice && !range?.hasMaxPrice && !range?.invalid) {
+    return Array.isArray(entries) ? [...entries] : [];
+  }
+  return (Array.isArray(entries) ? entries : []).filter((entry) => (
+    isPhoneSmsPriceWithinPreviewRange(entry?.price ?? entry?.cost, range)
+  ));
+}
+
+function filterPhoneSmsPriceValuesForPreviewRange(values = [], range = {}) {
+  if (!range?.hasMinPrice && !range?.hasMaxPrice && !range?.invalid) {
+    return Array.isArray(values) ? [...values] : [];
+  }
+  return (Array.isArray(values) ? values : []).filter((price) => (
+    isPhoneSmsPriceWithinPreviewRange(price, range)
+  ));
+}
+
+function formatPhoneSmsPriceRangePreviewText(range = {}) {
+  const minText = range?.hasMinPrice
+    ? (formatHeroSmsPriceForPreview(range.minPrice) || String(range.minPrice))
+    : '';
+  const maxText = range?.hasMaxPrice
+    ? (formatHeroSmsPriceForPreview(range.maxPrice) || String(range.maxPrice))
+    : '';
+  if (minText && maxText) {
+    return `${minText}~${maxText}`;
+  }
+  if (minText) {
+    return `${minText}~`;
+  }
+  if (maxText) {
+    return `~${maxText}`;
+  }
+  return '';
+}
+
+function buildPhoneSmsPriceRangePreviewMessage(range = {}) {
+  const rangeText = formatPhoneSmsPriceRangePreviewText(range);
+  if (range?.invalid) {
+    return `价格区间无效：最低购买价 ${formatHeroSmsPriceForPreview(range.minPrice) || range.minPrice} 高于价格上限 ${formatHeroSmsPriceForPreview(range.maxPrice) || range.maxPrice}`;
+  }
+  return rangeText ? `区间内无可用号源（当前 ${rangeText}）` : '暂无可用号源';
 }
 
 function formatPriceTiersForPreview(entries = [], options = {}) {
@@ -5925,14 +6215,14 @@ async function loadHeroSmsCountries() {
         .filter((entry) => entry.id)
         .sort((left, right) => String(left.label || '').localeCompare(String(right.label || '')));
       if (!optionItems.length) {
-        throw new Error('empty country list');
+        throw new Error('国家列表为空');
       }
       heroSmsCountrySearchTextById.clear();
       optionItems.forEach((entry) => heroSmsCountrySearchTextById.set(String(entry.id), entry.searchText));
       applyOptions(optionItems, selectHeroSmsCountry);
       applyOptions(optionItems, selectHeroSmsCountryFallback);
     } catch (error) {
-      console.warn('Failed to load 5sim countries:', error);
+      console.warn('加载 5sim 国家列表失败：', error);
       const fallbackItems = FIVE_SIM_SUPPORTED_COUNTRY_ITEMS.map((item) => ({
         id: item.id,
         label: formatFiveSimCountryDisplayLabel(item.id, item.eng),
@@ -5957,7 +6247,7 @@ async function loadHeroSmsCountries() {
     const payload = await response.json();
     const countries = Array.isArray(payload?.value) ? payload.value : (Array.isArray(payload) ? payload : []);
     if (!countries.length) {
-      throw new Error('empty country list');
+      throw new Error('国家列表为空');
     }
     const optionItems = countries
       .filter((item) => Number(item?.id) > 0 && (String(item?.eng || '').trim() || String(item?.chn || '').trim()))
@@ -5973,7 +6263,7 @@ async function loadHeroSmsCountries() {
       });
 
     if (!optionItems.length) {
-      throw new Error('empty country list');
+      throw new Error('国家列表为空');
     }
 
     heroSmsCountrySearchTextById.clear();
@@ -5984,7 +6274,7 @@ async function loadHeroSmsCountries() {
     applyOptions(optionItems, selectHeroSmsCountry);
     applyOptions(optionItems, selectHeroSmsCountryFallback);
   } catch (error) {
-    console.warn('Failed to load HeroSMS countries:', error);
+    console.warn('加载 HeroSMS 国家列表失败：', error);
     const fallbackItems = HERO_SMS_FALLBACK_COUNTRY_ITEMS
       .map((item) => {
         const id = normalizeHeroSmsCountryId(item.id);
@@ -6353,7 +6643,7 @@ async function loadFiveSimCountries() {
     const items = parseFiveSimCountriesPayload(payload);
     applyOptions(items.length ? items : fallbackItems);
   } catch (error) {
-    console.warn('Failed to load 5sim countries:', error);
+    console.warn('加载 5sim 国家列表失败：', error);
     applyOptions(fallbackItems);
   }
 
@@ -6661,13 +6951,18 @@ async function buildNexSmsPricePreviewLines(options = {}) {
   const serviceCode = normalizeNexSmsServiceCodeValue(
     inputNexSmsServiceCode?.value || latestState?.nexSmsServiceCode || DEFAULT_NEX_SMS_SERVICE_CODE
   );
-  const maxPriceText = normalizeHeroSmsMaxPriceValue(inputHeroSmsMaxPrice?.value || '');
-  const maxPrice = maxPriceText ? Number(maxPriceText) : null;
+  const priceRange = resolvePhoneSmsPricePreviewRange(
+    typeof PHONE_SMS_PROVIDER_NEXSMS !== 'undefined' ? PHONE_SMS_PROVIDER_NEXSMS : 'nexsms'
+  );
+  const maxPrice = priceRange.maxPrice;
   const apiKey = String(inputNexSmsApiKey?.value || '').trim();
   const providerLabel = String(options?.providerLabel || 'NexSMS').trim();
 
   if (!apiKey) {
     return [`${providerLabel}: 请先填写 NexSMS API Key`];
+  }
+  if (priceRange.invalid) {
+    return [`${providerLabel}: ${buildPhoneSmsPriceRangePreviewMessage(priceRange)}`];
   }
   if (!countryIds.length) {
     return [`${providerLabel}: 请先选择至少 1 个国家`];
@@ -6708,19 +7003,22 @@ async function buildNexSmsPricePreviewLines(options = {}) {
         .map((entry) => entry.price);
       const uniqueSorted = Array.from(new Set(availablePrices)).sort((left, right) => left - right);
       const fallbackMin = Number(data?.minPrice);
-      const lowest = uniqueSorted.length
-        ? uniqueSorted[0]
-        : (Number.isFinite(fallbackMin) && fallbackMin > 0 ? Math.round(fallbackMin * 10000) / 10000 : null);
+      const filteredTierEntries = filterPhoneSmsPriceEntriesForPreviewRange(tierEntries, priceRange);
+      const rangePrices = filterPhoneSmsPriceValuesForPreviewRange(uniqueSorted, priceRange);
+      const fallbackMinPrice = Number.isFinite(fallbackMin) && fallbackMin > 0
+        ? Math.round(fallbackMin * 10000) / 10000
+        : null;
+      const rangeFallbackMin = isPhoneSmsPriceWithinPreviewRange(fallbackMinPrice, priceRange)
+        ? fallbackMinPrice
+        : null;
+      const lowest = rangePrices.length ? rangePrices[0] : rangeFallbackMin;
       if (!Number.isFinite(lowest)) {
-        previews.push(`${countryLabel}: 暂无可用号源`);
+        previews.push(`${countryLabel}: ${buildPhoneSmsPriceRangePreviewMessage(priceRange)}`);
         continue;
       }
-      const tierText = formatPriceTiersForPreview(tierEntries, { maxPrice });
-      if (Number.isFinite(maxPrice) && maxPrice > 0 && lowest > maxPrice) {
-        previews.push(`${countryLabel}: 最低 ${lowest}（高于上限 ${maxPrice}）${tierText ? `；档位：${tierText}` : ''}`);
-      } else {
-        previews.push(`${countryLabel}: 最低 ${lowest}${tierText ? `；档位：${tierText}` : ''}`);
-      }
+      const tierText = formatPriceTiersForPreview(filteredTierEntries, { maxPrice });
+      const lowestLabel = priceRange.hasMinPrice || priceRange.hasMaxPrice ? '区间内最低' : '最低';
+      previews.push(`${countryLabel}: ${lowestLabel} ${lowest}${tierText ? `；档位：${tierText}` : ''}`);
     } catch (error) {
       previews.push(`${countryLabel}: 查询失败（${normalizeHeroSmsFetchErrorMessage(error)}）`);
     }
@@ -6748,12 +7046,18 @@ async function previewFiveSimPriceTiers() {
   const product = normalizeFiveSimProductValue(
     inputFiveSimProduct?.value || latestState?.fiveSimProduct || DEFAULT_FIVE_SIM_PRODUCT
   );
-  const maxPriceText = normalizeHeroSmsMaxPriceValue(inputHeroSmsMaxPrice?.value || '');
-  const maxPrice = maxPriceText ? Number(maxPriceText) : null;
+  const priceRange = resolvePhoneSmsPricePreviewRange(
+    typeof PHONE_SMS_PROVIDER_FIVE_SIM !== 'undefined' ? PHONE_SMS_PROVIDER_FIVE_SIM : '5sim'
+  );
+  const maxPrice = priceRange.maxPrice;
 
   displayHeroSmsPriceTiers.textContent = '查询中...';
   if (rowHeroSmsPriceTiers) {
     rowHeroSmsPriceTiers.style.display = '';
+  }
+  if (priceRange.invalid) {
+    displayHeroSmsPriceTiers.textContent = buildPhoneSmsPriceRangePreviewMessage(priceRange);
+    return;
   }
   if (!countryCodes.length) {
     displayHeroSmsPriceTiers.textContent = '请先选择至少 1 个国家，再查询价格';
@@ -6824,17 +7128,16 @@ async function previewFiveSimPriceTiers() {
         .filter((entry) => entry.count === null || entry.count > 0)
         .map((entry) => entry.price);
       const uniqueSorted = Array.from(new Set(prices)).sort((left, right) => left - right);
-      if (!uniqueSorted.length) {
-        previews.push(`${countryLabel}: 暂无可用号源`);
+      const rangePrices = filterPhoneSmsPriceValuesForPreviewRange(uniqueSorted, priceRange);
+      const filteredTierEntries = filterPhoneSmsPriceEntriesForPreviewRange(tierEntries, priceRange);
+      if (!rangePrices.length) {
+        previews.push(`${countryLabel}: ${buildPhoneSmsPriceRangePreviewMessage(priceRange)}`);
         continue;
       }
-      const lowest = uniqueSorted[0];
-      const tierText = formatPriceTiersForPreview(tierEntries, { maxPrice });
-      if (Number.isFinite(maxPrice) && maxPrice > 0 && lowest > maxPrice) {
-        previews.push(`${countryLabel}: 最低 ${lowest}（高于上限 ${maxPrice}）${tierText ? `；档位：${tierText}` : ''}`);
-      } else {
-        previews.push(`${countryLabel}: 最低 ${lowest}${tierText ? `；档位：${tierText}` : ''}`);
-      }
+      const lowest = rangePrices[0];
+      const tierText = formatPriceTiersForPreview(filteredTierEntries, { maxPrice });
+      const lowestLabel = priceRange.hasMinPrice || priceRange.hasMaxPrice ? '区间内最低' : '最低';
+      previews.push(`${countryLabel}: ${lowestLabel} ${lowest}${tierText ? `；档位：${tierText}` : ''}`);
     } catch (error) {
       previews.push(`${countryLabel}: 查询失败（${normalizeHeroSmsFetchErrorMessage(error)}）`);
     }
@@ -6855,12 +7158,17 @@ async function buildFiveSimPricePreviewLines(options = {}) {
   const product = normalizeFiveSimProductValue(
     inputFiveSimProduct?.value || latestState?.fiveSimProduct || DEFAULT_FIVE_SIM_PRODUCT
   );
-  const maxPriceText = normalizeHeroSmsMaxPriceValue(inputHeroSmsMaxPrice?.value || '');
-  const maxPrice = maxPriceText ? Number(maxPriceText) : null;
+  const priceRange = resolvePhoneSmsPricePreviewRange(
+    typeof PHONE_SMS_PROVIDER_FIVE_SIM !== 'undefined' ? PHONE_SMS_PROVIDER_FIVE_SIM : '5sim'
+  );
+  const maxPrice = priceRange.maxPrice;
   const providerLabel = String(options?.providerLabel || '5sim').trim();
 
   if (!countryCodes.length) {
     return [`${providerLabel}: 请先选择至少 1 个国家`];
+  }
+  if (priceRange.invalid) {
+    return [`${providerLabel}: ${buildPhoneSmsPriceRangePreviewMessage(priceRange)}`];
   }
 
   const collectPriceEntries = (payload, entries = []) => {
@@ -6927,17 +7235,16 @@ async function buildFiveSimPricePreviewLines(options = {}) {
         .filter((entry) => entry.count === null || entry.count > 0)
         .map((entry) => entry.price);
       const uniqueSorted = Array.from(new Set(prices)).sort((left, right) => left - right);
-      if (!uniqueSorted.length) {
-        previews.push(`${countryLabel}: 暂无可用号源`);
+      const rangePrices = filterPhoneSmsPriceValuesForPreviewRange(uniqueSorted, priceRange);
+      const filteredTierEntries = filterPhoneSmsPriceEntriesForPreviewRange(tierEntries, priceRange);
+      if (!rangePrices.length) {
+        previews.push(`${countryLabel}: ${buildPhoneSmsPriceRangePreviewMessage(priceRange)}`);
         continue;
       }
-      const lowest = uniqueSorted[0];
-      const tierText = formatPriceTiersForPreview(tierEntries, { maxPrice });
-      if (Number.isFinite(maxPrice) && maxPrice > 0 && lowest > maxPrice) {
-        previews.push(`${countryLabel}: 最低 ${lowest}（高于上限 ${maxPrice}）${tierText ? `；档位：${tierText}` : ''}`);
-      } else {
-        previews.push(`${countryLabel}: 最低 ${lowest}${tierText ? `；档位：${tierText}` : ''}`);
-      }
+      const lowest = rangePrices[0];
+      const tierText = formatPriceTiersForPreview(filteredTierEntries, { maxPrice });
+      const lowestLabel = priceRange.hasMinPrice || priceRange.hasMaxPrice ? '区间内最低' : '最低';
+      previews.push(`${countryLabel}: ${lowestLabel} ${lowest}${tierText ? `；档位：${tierText}` : ''}`);
     } catch (error) {
       previews.push(`${countryLabel}: 查询失败（${normalizeHeroSmsFetchErrorMessage(error)}）`);
     }
@@ -7009,13 +7316,18 @@ async function previewHeroSmsPriceTiers() {
         label: normalizeHeroSmsCountryLabel(country?.label, ''),
       }))
       .filter((country) => country.id > 0);
-    const maxPriceText = normalizeHeroSmsMaxPriceValue(inputHeroSmsMaxPrice?.value || '');
-    const maxPrice = maxPriceText ? Number(maxPriceText) : null;
+    const priceRange = resolvePhoneSmsPricePreviewRange(heroProviderValue);
+    const maxPrice = priceRange.maxPrice;
     const apiKey = String(inputHeroSmsApiKey?.value || '').trim();
 
     const heroLines = ['HeroSMS:'];
     if (!apiKey) {
       heroLines.push('请先填写接码 API Key');
+      previews.push(...heroLines, '');
+      continue;
+    }
+    if (priceRange.invalid) {
+      heroLines.push(buildPhoneSmsPriceRangePreviewMessage(priceRange));
       previews.push(...heroLines, '');
       continue;
     }
@@ -7143,13 +7455,18 @@ async function previewHeroSmsPriceTiers() {
           price,
           count: Math.max(0, Number(tierStockByPrice.get(price)) || 0),
         }));
-        const withinLimitInStockPrices = Number.isFinite(maxPrice) && maxPrice > 0
-          ? inStockPrices.filter((price) => price <= maxPrice)
-          : inStockPrices;
-        const tierPreviewText = formatPriceTiersWithZeroStockForPreview(tierEntries, { maxPrice });
-        if (!inStockPrices.length) {
-          if (allPrices.length) {
-            const lowestKnown = formatHeroSmsPriceForPreview(allPrices[0]) || String(allPrices[0]);
+        const rangeAllPrices = filterPhoneSmsPriceValuesForPreviewRange(allPrices, priceRange);
+        const rangeInStockPrices = filterPhoneSmsPriceValuesForPreviewRange(inStockPrices, priceRange);
+        const filteredTierEntries = filterPhoneSmsPriceEntriesForPreviewRange(tierEntries, priceRange);
+        const tierPreviewText = formatPriceTiersWithZeroStockForPreview(filteredTierEntries, { maxPrice });
+        if (!rangeInStockPrices.length) {
+          if ((priceRange.hasMinPrice || priceRange.hasMaxPrice) && allPrices.length && !rangeAllPrices.length) {
+            heroLines.push(`${countryLabel}: ${buildPhoneSmsPriceRangePreviewMessage(priceRange)}`);
+            continue;
+          }
+          if (rangeAllPrices.length || allPrices.length) {
+            const lowestKnownPrice = rangeAllPrices.length ? rangeAllPrices[0] : allPrices[0];
+            const lowestKnown = formatHeroSmsPriceForPreview(lowestKnownPrice) || String(lowestKnownPrice);
             heroLines.push(`${countryLabel}: 全档位均无库存（最低标价 ${lowestKnown}）${tierPreviewText ? `；档位：${tierPreviewText}` : ''}`);
             continue;
           }
@@ -7160,14 +7477,10 @@ async function previewHeroSmsPriceTiers() {
           heroLines.push(`${countryLabel}: 无可用价格`);
           continue;
         }
-        if (Number.isFinite(maxPrice) && maxPrice > 0 && !withinLimitInStockPrices.length) {
-          const lowestInStockText = formatHeroSmsPriceForPreview(inStockPrices[0]) || String(inStockPrices[0]);
-          heroLines.push(`${countryLabel}: 上限内无可用号源（上限 ${formatHeroSmsPriceForPreview(maxPrice) || maxPrice}，最低可用 ${lowestInStockText}）${tierPreviewText ? `；档位：${tierPreviewText}` : ''}`);
-        } else {
-          const lowestWithinLimit = withinLimitInStockPrices[0];
-          const lowestText = formatHeroSmsPriceForPreview(lowestWithinLimit) || String(lowestWithinLimit);
-          heroLines.push(`${countryLabel}: 上限内最低 ${lowestText}${tierPreviewText ? `；档位：${tierPreviewText}` : ''}`);
-        }
+        const lowestWithinRange = rangeInStockPrices[0];
+        const lowestText = formatHeroSmsPriceForPreview(lowestWithinRange) || String(lowestWithinRange);
+        const lowestLabel = priceRange.hasMinPrice || priceRange.hasMaxPrice ? '区间内最低' : '最低';
+        heroLines.push(`${countryLabel}: ${lowestLabel} ${lowestText}${tierPreviewText ? `；档位：${tierPreviewText}` : ''}`);
       } catch (error) {
         heroLines.push(`${countryLabel}: 查询失败（${normalizeHeroSmsFetchErrorMessage(error)}）`);
       }
@@ -7294,6 +7607,69 @@ function normalizeSignupMethod(value = '') {
   return String(value || '').trim().toLowerCase() === 'phone'
     ? 'phone'
     : 'email';
+}
+
+function isPhoneSignupReuseLocked(state = latestState, options = {}) {
+  const hasOptionMethod = Object.prototype.hasOwnProperty.call(options || {}, 'signupMethod');
+  const rawMethod = hasOptionMethod
+    ? options.signupMethod
+    : (typeof getSelectedSignupMethod === 'function'
+      ? getSelectedSignupMethod()
+      : (state?.signupMethod || DEFAULT_SIGNUP_METHOD));
+  const selectedMethod = normalizeSignupMethod(rawMethod);
+  if (selectedMethod === SIGNUP_METHOD_PHONE) {
+    return true;
+  }
+
+  if (!options?.includeRuntimeIdentity) {
+    return false;
+  }
+
+  const identifierType = String(
+    options?.accountIdentifierType
+    ?? state?.accountIdentifierType
+    ?? ''
+  ).trim().toLowerCase();
+  return identifierType === 'phone';
+}
+
+function getStoredPhoneSmsReuseEnabled(state = latestState) {
+  return normalizeHeroSmsReuseEnabledValue(
+    state?.phoneSmsReuseEnabled,
+    state?.heroSmsReuseEnabled
+  );
+}
+
+function getStoredFreePhoneReuseEnabled(state = latestState) {
+  return Boolean(state?.freePhoneReuseEnabled);
+}
+
+function getStoredFreePhoneReuseAutoEnabled(state = latestState) {
+  return Boolean(state?.freePhoneReuseAutoEnabled);
+}
+
+function restorePhoneReuseControlsFromState(state = latestState) {
+  if (typeof inputHeroSmsReuseEnabled !== 'undefined' && inputHeroSmsReuseEnabled) {
+    inputHeroSmsReuseEnabled.checked = getStoredPhoneSmsReuseEnabled(state);
+  }
+  if (typeof inputFreePhoneReuseEnabled !== 'undefined' && inputFreePhoneReuseEnabled) {
+    inputFreePhoneReuseEnabled.checked = getStoredFreePhoneReuseEnabled(state);
+  }
+  if (typeof inputFreePhoneReuseAutoEnabled !== 'undefined' && inputFreePhoneReuseAutoEnabled) {
+    inputFreePhoneReuseAutoEnabled.checked = getStoredFreePhoneReuseAutoEnabled(state);
+  }
+}
+
+function setElementReuseLockedState(element, locked, title = PHONE_SIGNUP_REUSE_LOCK_TITLE) {
+  if (!element) {
+    return;
+  }
+  element.classList?.toggle?.('is-disabled', Boolean(locked));
+  if (locked) {
+    element.title = title;
+  } else if (element.title === title) {
+    element.title = '';
+  }
 }
 
 function normalizePanelMode(value = '') {
@@ -7489,6 +7865,9 @@ function updateSignupMethodUI(options = {}) {
   syncStepDefinitionsForMode(stepDefinitionState.plusModeEnabled, {
     plusPaymentMethod: getSelectedPlusPaymentMethod(latestState),
     signupMethod: selectedMethod,
+    phoneSignupReloginAfterBindEmailEnabled: typeof inputPhoneSignupReloginAfterBindEmail !== 'undefined' && inputPhoneSignupReloginAfterBindEmail
+      ? Boolean(inputPhoneSignupReloginAfterBindEmail.checked)
+      : currentPhoneSignupReloginAfterBindEmailEnabled,
   });
   if (typeof syncSignupPhoneInputFromState === 'function') {
     syncSignupPhoneInputFromState(latestState);
@@ -7533,6 +7912,11 @@ function updatePhoneVerificationSettingsUI() {
     : true;
   const enabled = canShowPhoneSettings && rawEnabled;
   const showSettings = enabled && phoneVerificationSectionExpanded;
+  const selectedSignupMethodForPhoneSettings = typeof getSelectedSignupMethod === 'function'
+    ? getSelectedSignupMethod()
+    : normalizeSignupMethod(latestState?.signupMethod || DEFAULT_SIGNUP_METHOD);
+  const showPhoneSignupReloginAfterBindEmail = showSettings
+    && selectedSignupMethodForPhoneSettings === SIGNUP_METHOD_PHONE;
   const normalizeProvider = typeof normalizePhoneSmsProviderValue === 'function'
     ? normalizePhoneSmsProviderValue
     : ((value = '') => {
@@ -7605,6 +7989,9 @@ function updatePhoneVerificationSettingsUI() {
       row.style.display = showSettings ? '' : 'none';
     }
   });
+  if (typeof rowPhoneSignupReloginAfterBindEmail !== 'undefined' && rowPhoneSignupReloginAfterBindEmail) {
+    rowPhoneSignupReloginAfterBindEmail.style.display = showPhoneSignupReloginAfterBindEmail ? '' : 'none';
+  }
   if (rowHeroSmsCountry) rowHeroSmsCountry.style.display = showSettings && heroProvider ? '' : 'none';
   if (rowHeroSmsCountryFallback) rowHeroSmsCountryFallback.style.display = showSettings && heroProvider ? '' : 'none';
   if (rowHeroSmsAcquirePriority) rowHeroSmsAcquirePriority.style.display = showSettings && heroProvider ? '' : 'none';
@@ -7627,19 +8014,85 @@ function updatePhoneVerificationSettingsUI() {
   if (typeof rowFreePhoneReuseAutoEnabled !== 'undefined' && rowFreePhoneReuseAutoEnabled) {
     rowFreePhoneReuseAutoEnabled.style.display = showSettings ? '' : 'none';
   }
+  const phoneSignupReuseLocked = typeof isPhoneSignupReuseLocked === 'function'
+    ? isPhoneSignupReuseLocked(latestState, {
+      signupMethod: typeof getSelectedSignupMethod === 'function'
+        ? getSelectedSignupMethod()
+        : latestState?.signupMethod,
+    })
+    : false;
+  if (!phoneSignupReuseLocked && phoneSignupReuseUiWasLocked) {
+    restorePhoneReuseControlsFromState(latestState);
+  }
+  if (phoneSignupReuseLocked) {
+    if (typeof inputHeroSmsReuseEnabled !== 'undefined' && inputHeroSmsReuseEnabled) {
+      inputHeroSmsReuseEnabled.checked = false;
+    }
+    if (typeof inputFreePhoneReuseEnabled !== 'undefined' && inputFreePhoneReuseEnabled) {
+      inputFreePhoneReuseEnabled.checked = false;
+    }
+    if (typeof inputFreePhoneReuseAutoEnabled !== 'undefined' && inputFreePhoneReuseAutoEnabled) {
+      inputFreePhoneReuseAutoEnabled.checked = false;
+    }
+  }
+  phoneSignupReuseUiWasLocked = phoneSignupReuseLocked;
+  const settingsLocked = isAutoRunLockedPhase() || isAutoRunScheduledPhase();
+  if (typeof inputPhoneSignupReloginAfterBindEmail !== 'undefined' && inputPhoneSignupReloginAfterBindEmail) {
+    inputPhoneSignupReloginAfterBindEmail.disabled = settingsLocked || !showPhoneSignupReloginAfterBindEmail;
+  }
+  if (typeof rowPhoneSignupReloginAfterBindEmail !== 'undefined' && rowPhoneSignupReloginAfterBindEmail) {
+    rowPhoneSignupReloginAfterBindEmail.classList.toggle('is-disabled', settingsLocked || !showPhoneSignupReloginAfterBindEmail);
+  }
   const freePhoneReuseEnabled = Boolean(
-    typeof inputFreePhoneReuseEnabled !== 'undefined' && inputFreePhoneReuseEnabled?.checked
+    !phoneSignupReuseLocked
+    && typeof inputFreePhoneReuseEnabled !== 'undefined'
+    && inputFreePhoneReuseEnabled?.checked
   );
-  const freePhoneReuseAutoAvailable = showSettings && freePhoneReuseEnabled;
+  const freePhoneReuseAutoAvailable = showSettings && !phoneSignupReuseLocked && freePhoneReuseEnabled;
+  if (typeof inputHeroSmsReuseEnabled !== 'undefined' && inputHeroSmsReuseEnabled) {
+    inputHeroSmsReuseEnabled.disabled = settingsLocked || phoneSignupReuseLocked;
+  }
   if (typeof inputFreePhoneReuseAutoEnabled !== 'undefined' && inputFreePhoneReuseAutoEnabled) {
-    inputFreePhoneReuseAutoEnabled.disabled = !freePhoneReuseAutoAvailable;
+    inputFreePhoneReuseAutoEnabled.disabled = settingsLocked || phoneSignupReuseLocked || !freePhoneReuseAutoAvailable;
     if (!freePhoneReuseAutoAvailable) {
       inputFreePhoneReuseAutoEnabled.checked = false;
     }
   }
-  setFreePhoneReuseControlsLocked(isAutoRunLockedPhase() || isAutoRunScheduledPhase());
+  setFreePhoneReuseControlsLocked(settingsLocked || phoneSignupReuseLocked);
+  if (typeof selectHeroSmsPreferredActivation !== 'undefined' && selectHeroSmsPreferredActivation) {
+    selectHeroSmsPreferredActivation.disabled = settingsLocked || phoneSignupReuseLocked;
+  }
+  if (typeof inputFreeReusablePhone !== 'undefined' && inputFreeReusablePhone) {
+    inputFreeReusablePhone.disabled = settingsLocked || phoneSignupReuseLocked;
+  }
+  if (typeof btnSaveFreeReusablePhone !== 'undefined' && btnSaveFreeReusablePhone) {
+    btnSaveFreeReusablePhone.disabled = settingsLocked || phoneSignupReuseLocked;
+  }
+  if (typeof btnClearFreeReusablePhone !== 'undefined' && btnClearFreeReusablePhone) {
+    btnClearFreeReusablePhone.disabled = settingsLocked || phoneSignupReuseLocked;
+  }
+  const heroSmsReuseRow = typeof inputHeroSmsReuseEnabled !== 'undefined' && inputHeroSmsReuseEnabled?.closest
+    ? inputHeroSmsReuseEnabled.closest('.hero-sms-price-control')
+    : null;
+  setElementReuseLockedState(heroSmsReuseRow, phoneSignupReuseLocked);
+  setElementReuseLockedState(
+    typeof rowFreePhoneReuseEnabled !== 'undefined' ? rowFreePhoneReuseEnabled : null,
+    phoneSignupReuseLocked
+  );
+  setElementReuseLockedState(
+    typeof rowFreePhoneReuseAutoEnabled !== 'undefined' ? rowFreePhoneReuseAutoEnabled : null,
+    phoneSignupReuseLocked
+  );
+  setElementReuseLockedState(
+    typeof rowHeroSmsPreferredActivation !== 'undefined' ? rowHeroSmsPreferredActivation : null,
+    phoneSignupReuseLocked
+  );
+  setElementReuseLockedState(
+    typeof rowFreeReusablePhone !== 'undefined' ? rowFreeReusablePhone : null,
+    phoneSignupReuseLocked
+  );
   if (typeof rowFreePhoneReuseAutoEnabled !== 'undefined' && rowFreePhoneReuseAutoEnabled) {
-    rowFreePhoneReuseAutoEnabled.classList.toggle('is-disabled', !freePhoneReuseAutoAvailable);
+    rowFreePhoneReuseAutoEnabled.classList.toggle('is-disabled', phoneSignupReuseLocked || !freePhoneReuseAutoAvailable);
   }
   const runtimeVisible = enabled;
   [
@@ -8481,6 +8934,7 @@ function initializeManualStepActions() {
       return;
     }
     const step = Number(row.dataset.step);
+    const nodeId = String(row.dataset.nodeId || getNodeIdByStepForCurrentMode(step) || '').trim();
     const statusEl = row.querySelector('.step-status');
     if (!statusEl) return;
 
@@ -8491,13 +8945,14 @@ function initializeManualStepActions() {
     manualBtn.type = 'button';
     manualBtn.className = 'step-manual-btn';
     manualBtn.dataset.step = String(step);
-    manualBtn.title = '跳过此步';
-    manualBtn.setAttribute('aria-label', `跳过步骤 ${step}`);
+    manualBtn.dataset.nodeId = nodeId;
+    manualBtn.title = '跳过此节点';
+    manualBtn.setAttribute('aria-label', `跳过节点 ${nodeId || step}`);
     manualBtn.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="13 17 18 12 13 7"/><polyline points="6 17 11 12 6 7"/></svg>';
     manualBtn.addEventListener('click', async (event) => {
       event.stopPropagation();
       try {
-        await handleSkipStep(step);
+        await handleSkipNode(nodeId || getNodeIdByStepForCurrentMode(step));
       } catch (err) {
         showToast(err.message, 'error');
       }
@@ -8512,16 +8967,20 @@ function initializeManualStepActions() {
 function renderStepsList() {
   if (!stepsList) return;
 
-  stepsList.innerHTML = stepDefinitions.map((step) => `
-    <div class="step-row" data-step="${step.id}" data-step-key="${escapeHtml(step.key)}">
-      <div class="step-indicator" data-step="${step.id}"><span class="step-num">${step.id}</span></div>
-      <button class="step-btn" data-step="${step.id}" data-step-key="${escapeHtml(step.key)}">${escapeHtml(step.title)}</button>
-      <span class="step-status" data-step="${step.id}"></span>
+  stepsList.innerHTML = workflowNodes.map((node) => {
+    const step = getStepIdByNodeIdForCurrentMode(node.nodeId);
+    const nodeId = String(node.nodeId || '').trim();
+    return `
+    <div class="step-row" data-step="${step}" data-node-id="${escapeHtml(nodeId)}" data-step-key="${escapeHtml(node.executeKey || nodeId)}">
+      <div class="step-indicator" data-step="${step}" data-node-id="${escapeHtml(nodeId)}"><span class="step-num">${step || node.displayOrder || ''}</span></div>
+      <button class="step-btn" data-step="${step}" data-node-id="${escapeHtml(nodeId)}" data-step-key="${escapeHtml(node.executeKey || nodeId)}">${escapeHtml(node.title)}</button>
+      <span class="step-status" data-step="${step}" data-node-id="${escapeHtml(nodeId)}"></span>
     </div>
-  `).join('');
+  `;
+  }).join('');
 
   if (stepsProgress) {
-    stepsProgress.textContent = `0 / ${STEP_IDS.length}`;
+    stepsProgress.textContent = `0 / ${NODE_IDS.length}`;
   }
 
   initializeManualStepActions();
@@ -8539,6 +8998,12 @@ function syncStepDefinitionsForMode(plusModeEnabled = false, plusPaymentMethodOr
     ? plusPaymentMethodOrOptions
     : (options.plusPaymentMethod || getSelectedPlusPaymentMethod(latestState));
   const nextSignupMethod = normalizeSignupMethod(options.signupMethod || currentSignupMethod || DEFAULT_SIGNUP_METHOD);
+  const nextPhoneSignupReloginAfterBindEmailEnabled = Boolean(
+    options.phoneSignupReloginAfterBindEmailEnabled
+      ?? (typeof inputPhoneSignupReloginAfterBindEmail !== 'undefined' && inputPhoneSignupReloginAfterBindEmail
+        ? inputPhoneSignupReloginAfterBindEmail.checked
+        : currentPhoneSignupReloginAfterBindEmailEnabled)
+  );
   const nextPaymentMethod = normalizePlusPaymentMethod(rawPaymentMethod);
   const nextActiveFlowId = String(
     options.activeFlowId
@@ -8552,12 +9017,14 @@ function syncStepDefinitionsForMode(plusModeEnabled = false, plusPaymentMethodOr
     plusModeEnabled: nextPlusModeEnabled,
     plusPaymentMethod: nextPaymentMethod,
     signupMethod: nextSignupMethod,
+    phoneSignupReloginAfterBindEmailEnabled: nextPhoneSignupReloginAfterBindEmailEnabled,
   });
   const paymentTitleChanged = Boolean(nextPlusModeEnabled && currentPaymentStep && nextPaymentTitle && currentPaymentStep.title !== nextPaymentTitle);
   const shouldRender = Boolean(options.render)
     || nextPlusModeEnabled !== currentPlusModeEnabled
     || nextPaymentMethod !== currentPlusPaymentMethod
     || nextSignupMethod !== currentSignupMethod
+    || nextPhoneSignupReloginAfterBindEmailEnabled !== currentPhoneSignupReloginAfterBindEmailEnabled
     || paymentTitleChanged;
   if (!shouldRender) {
     return;
@@ -8567,6 +9034,7 @@ function syncStepDefinitionsForMode(plusModeEnabled = false, plusPaymentMethodOr
     activeFlowId: nextActiveFlowId,
     plusPaymentMethod: nextPaymentMethod,
     signupMethod: nextSignupMethod,
+    phoneSignupReloginAfterBindEmailEnabled: nextPhoneSignupReloginAfterBindEmailEnabled,
   });
   renderStepsList();
 }
@@ -8586,8 +9054,10 @@ function applySettingsState(state) {
         signupMethod: normalizeSignupMethod(state?.signupMethod || DEFAULT_SIGNUP_METHOD),
       };
     syncStepDefinitionsForMode(stepDefinitionState.plusModeEnabled, {
+      activeFlowId: state?.flowId || state?.activeFlowId,
       plusPaymentMethod: state?.plusPaymentMethod,
       signupMethod: stepDefinitionState.signupMethod,
+      phoneSignupReloginAfterBindEmailEnabled: Boolean(state?.phoneSignupReloginAfterBindEmailEnabled),
     });
   }
   const fallbackIpProxyService = '711proxy';
@@ -8939,6 +9409,11 @@ function applySettingsState(state) {
   if (typeof setSignupMethod === 'function') {
     setSignupMethod(state?.signupMethod || DEFAULT_SIGNUP_METHOD);
   }
+  if (typeof inputPhoneSignupReloginAfterBindEmail !== 'undefined' && inputPhoneSignupReloginAfterBindEmail) {
+    inputPhoneSignupReloginAfterBindEmail.checked = state?.phoneSignupReloginAfterBindEmailEnabled !== undefined
+      ? Boolean(state.phoneSignupReloginAfterBindEmailEnabled)
+      : DEFAULT_PHONE_SIGNUP_RELOGIN_AFTER_BIND_EMAIL_ENABLED;
+  }
   const restoredPhoneSmsProvider = normalizePhoneSmsProvider(state?.phoneSmsProvider);
   const previousPhoneSmsProvider = selectPhoneSmsProvider ? normalizePhoneSmsProvider(selectPhoneSmsProvider.value) : restoredPhoneSmsProvider;
   const defaultFiveSimProduct = typeof DEFAULT_FIVE_SIM_PRODUCT !== 'undefined'
@@ -8958,7 +9433,7 @@ function applySettingsState(state) {
   if (previousPhoneSmsProvider !== restoredPhoneSmsProvider) {
     heroSmsCountrySelectionOrder = [];
     loadHeroSmsCountries().catch((error) => {
-      console.warn('Failed to reload SMS countries after provider restore:', error);
+      console.warn('恢复接码平台后重新加载国家列表失败：', error);
     });
   }
   if (inputHeroSmsApiKey) {
@@ -8988,7 +9463,10 @@ function applySettingsState(state) {
       : String(state?.nexSmsServiceCode || defaultNexSmsServiceCode).trim().toLowerCase().replace(/[^a-z0-9_-]+/g, '') || defaultNexSmsServiceCode;
   }
   if (typeof inputHeroSmsReuseEnabled !== 'undefined' && inputHeroSmsReuseEnabled) {
-    inputHeroSmsReuseEnabled.checked = normalizeHeroSmsReuseEnabledValue(state?.heroSmsReuseEnabled);
+    inputHeroSmsReuseEnabled.checked = normalizeHeroSmsReuseEnabledValue(
+      state?.phoneSmsReuseEnabled,
+      state?.heroSmsReuseEnabled
+    );
   }
   if (typeof inputFreePhoneReuseEnabled !== 'undefined' && inputFreePhoneReuseEnabled) {
     inputFreePhoneReuseEnabled.checked = Boolean(state?.freePhoneReuseEnabled);
@@ -9003,6 +9481,11 @@ function applySettingsState(state) {
     inputHeroSmsMaxPrice.value = restoredPhoneSmsProvider === PHONE_SMS_PROVIDER_FIVE_SIM
       ? normalizeFiveSimMaxPriceValue(state?.fiveSimMaxPrice || '')
       : normalizeHeroSmsMaxPriceValue(state?.heroSmsMaxPrice || '');
+  }
+  if (typeof inputHeroSmsMinPrice !== 'undefined' && inputHeroSmsMinPrice) {
+    inputHeroSmsMinPrice.value = restoredPhoneSmsProvider === PHONE_SMS_PROVIDER_FIVE_SIM
+      ? normalizePhoneSmsMinPriceValue(state?.fiveSimMinPrice || '', PHONE_SMS_PROVIDER_FIVE_SIM)
+      : normalizePhoneSmsMinPriceValue(state?.heroSmsMinPrice || '', restoredPhoneSmsProvider);
   }
   if (inputFiveSimOperator) {
     inputFiveSimOperator.value = normalizeFiveSimOperator(state?.fiveSimOperator);
@@ -9132,9 +9615,9 @@ async function restoreState() {
       displayLocalhostUrl.textContent = state.localhostUrl;
       displayLocalhostUrl.classList.add('has-value');
     }
-    if (state.stepStatuses) {
-      for (const [step, status] of Object.entries(state.stepStatuses)) {
-        updateStepUI(Number(step), status);
+    if (state.nodeStatuses) {
+      for (const [nodeId, status] of Object.entries(state.nodeStatuses)) {
+        updateNodeUI(nodeId, status);
       }
     }
 
@@ -10427,6 +10910,152 @@ async function saveCloudflareTempEmailDomainSettings(domains, activeDomain, opti
   }
 }
 
+function joinCloudflareTempEmailSettingsUrl(baseUrl, path) {
+  const normalizedBaseUrl = normalizeCloudflareTempEmailBaseUrlValue(baseUrl);
+  const normalizedPath = String(path || '').trim();
+  if (!normalizedBaseUrl || !normalizedPath) {
+    return normalizedBaseUrl || '';
+  }
+  return `${normalizedBaseUrl}${normalizedPath.startsWith('/') ? '' : '/'}${normalizedPath}`;
+}
+
+function buildCloudflareTempEmailSyncHeaders(options = {}) {
+  const { includeAdminAuth = false } = options;
+  const headers = {
+    Accept: 'application/json',
+  };
+  const customAuth = String(inputTempEmailCustomAuth?.value || '').trim();
+  if (customAuth) {
+    headers['x-custom-auth'] = customAuth;
+  }
+  if (includeAdminAuth) {
+    const adminAuth = String(inputTempEmailAdminAuth?.value || '').trim();
+    if (adminAuth) {
+      headers['x-admin-auth'] = adminAuth;
+    }
+  }
+  return headers;
+}
+
+async function requestCloudflareTempEmailSyncPayload(baseUrl, path, options = {}) {
+  const url = joinCloudflareTempEmailSettingsUrl(baseUrl, path);
+  if (!url) {
+    throw new Error('Cloudflare Temp Email 服务地址为空或格式无效。');
+  }
+
+  const response = await fetch(url, {
+    cache: 'no-store',
+    headers: buildCloudflareTempEmailSyncHeaders(options),
+  });
+  const rawText = await response.text();
+  let payload = rawText;
+  try {
+    payload = rawText ? JSON.parse(rawText) : {};
+  } catch {
+    payload = rawText;
+  }
+
+  if (!response.ok) {
+    const message = typeof payload === 'object' && payload
+      ? (payload.message || payload.error || payload.msg)
+      : '';
+    throw new Error(message || `HTTP ${response.status}`);
+  }
+
+  return payload;
+}
+
+function mergeCloudflareTempEmailDomains(existingDomains, fetchedDomains) {
+  const mergedDomains = [];
+  const seen = new Set();
+  for (const domain of normalizeCloudflareTempEmailDomains(fetchedDomains)) {
+    if (seen.has(domain)) continue;
+    seen.add(domain);
+    mergedDomains.push(domain);
+  }
+  for (const domain of normalizeCloudflareTempEmailDomains(existingDomains)) {
+    if (seen.has(domain)) continue;
+    seen.add(domain);
+    mergedDomains.push(domain);
+  }
+  return mergedDomains;
+}
+
+async function fetchCloudflareTempEmailAvailableDomains(baseUrl) {
+  let openSettingsError = null;
+  try {
+    const payload = await requestCloudflareTempEmailSyncPayload(baseUrl, '/open_api/settings');
+    const domains = normalizeCloudflareTempEmailDomains(payload?.domains || []);
+    if (domains.length) {
+      return {
+        domains,
+        source: 'open_api/settings',
+      };
+    }
+    openSettingsError = new Error('公开设置未返回可用域名。');
+  } catch (error) {
+    openSettingsError = error;
+  }
+
+  const adminAuth = String(inputTempEmailAdminAuth?.value || '').trim();
+  if (!adminAuth) {
+    throw openSettingsError || new Error('未获取到可用域名。');
+  }
+
+  const payload = await requestCloudflareTempEmailSyncPayload(baseUrl, '/admin/worker/configs', {
+    includeAdminAuth: true,
+  });
+  const domains = normalizeCloudflareTempEmailDomains(payload?.DOMAINS || []);
+  if (!domains.length) {
+    throw openSettingsError || new Error('管理配置未返回可用域名。');
+  }
+  return {
+    domains,
+    source: 'admin/worker/configs',
+  };
+}
+
+async function syncCloudflareTempEmailDomainsFromService() {
+  const normalizedBaseUrl = normalizeCloudflareTempEmailBaseUrlValue(inputTempEmailBaseUrl?.value || '');
+  if (!normalizedBaseUrl) {
+    throw new Error('请先填写有效的 Cloudflare Temp Email 服务地址。');
+  }
+
+  const previousButtonText = btnTempEmailDomainMode.textContent;
+  btnTempEmailDomainMode.disabled = true;
+  btnTempEmailDomainMode.textContent = '更新中...';
+
+  try {
+    const { domains: fetchedDomains, source } = await fetchCloudflareTempEmailAvailableDomains(normalizedBaseUrl);
+    const { domains: existingDomains, activeDomain } = getCloudflareTempEmailDomainsFromState();
+    const currentDomain = normalizeCloudflareTempEmailDomainValue(selectTempEmailDomain.value || activeDomain);
+    const mergedDomains = mergeCloudflareTempEmailDomains(existingDomains, fetchedDomains);
+    const nextActiveDomain = mergedDomains.includes(currentDomain)
+      ? currentDomain
+      : (fetchedDomains[0] || mergedDomains[0] || '');
+    const existingSet = new Set(normalizeCloudflareTempEmailDomains(existingDomains));
+    const addedCount = fetchedDomains.filter((domain) => !existingSet.has(domain)).length;
+
+    await saveCloudflareTempEmailDomainSettings(mergedDomains, nextActiveDomain, { silent: true });
+    if (addedCount > 0) {
+      showToast(`已更新 Cloudflare Temp Email 域名，新增 ${addedCount} 个。`, 'success', 2200);
+    } else {
+      showToast('已同步 Cloudflare Temp Email 域名，暂无新增项。', 'info', 2200);
+    }
+    return {
+      domains: mergedDomains,
+      activeDomain: nextActiveDomain,
+      source,
+    };
+  } catch (error) {
+    const message = error?.message || String(error || '未知错误');
+    throw new Error(`更新 Cloudflare Temp Email 域名失败：${message}`);
+  } finally {
+    btnTempEmailDomainMode.disabled = false;
+    btnTempEmailDomainMode.textContent = previousButtonText || '更新';
+  }
+}
+
 async function handleDeleteCloudflareDomain(domain) {
   const targetDomain = normalizeCloudflareDomainValue(domain);
   if (!targetDomain) {
@@ -10615,21 +11244,54 @@ function updatePanelModeUI() {
 // UI Updates
 // ============================================================
 
-function updateStepUI(step, status) {
+function updateNodeUI(nodeId, status) {
+  const normalizedNodeId = String(nodeId || '').trim();
+  if (!normalizedNodeId) return;
   syncLatestState({
-    stepStatuses: {
-      ...getStepStatuses(),
-      [step]: status,
+    nodeStatuses: {
+      ...getNodeStatuses(),
+      [normalizedNodeId]: status,
     },
   });
 
-  renderSingleStepStatus(step, status);
+  renderSingleNodeStatus(normalizedNodeId, status);
   updateButtonStates();
   updateProgressCounter();
   updateConfigMenuControls();
 }
 
+function updateStepUI(step, status) {
+  const nodeId = getNodeIdByStepForCurrentMode(step);
+  if (nodeId) {
+    updateNodeUI(nodeId, status);
+    return;
+  }
+  updateButtonStates();
+  updateProgressCounter();
+  updateConfigMenuControls();
+}
+
+function renderSingleNodeStatus(nodeId, status) {
+  const normalizedStatus = status || 'pending';
+  const normalizedNodeId = String(nodeId || '').trim();
+  const selectorNodeId = escapeCssValue(normalizedNodeId);
+  const statusEl = document.querySelector(`.step-status[data-node-id="${selectorNodeId}"]`);
+  const row = document.querySelector(`.step-row[data-node-id="${selectorNodeId}"]`);
+
+  if (statusEl) statusEl.textContent = STATUS_ICONS[normalizedStatus] || '';
+  if (row) {
+    row.className = `step-row ${normalizedStatus}`;
+  }
+}
+
 function renderSingleStepStatus(step, status) {
+  const nodeId = typeof getNodeIdByStepForCurrentMode === 'function'
+    ? getNodeIdByStepForCurrentMode(step)
+    : '';
+  if (nodeId && typeof renderSingleNodeStatus === 'function') {
+    renderSingleNodeStatus(nodeId, status);
+    return;
+  }
   const normalizedStatus = status || 'pending';
   const statusEl = document.querySelector(`.step-status[data-step="${step}"]`);
   const row = document.querySelector(`.step-row[data-step="${step}"]`);
@@ -10641,20 +11303,32 @@ function renderSingleStepStatus(step, status) {
 }
 
 function renderStepStatuses(state = latestState) {
-  const statuses = getStepStatuses(state);
-  for (const step of STEP_IDS) {
-    renderSingleStepStatus(step, statuses[step]);
+  if (typeof getNodeStatuses === 'function' && typeof NODE_IDS !== 'undefined') {
+    const statuses = getNodeStatuses(state);
+    for (const nodeId of NODE_IDS) {
+      renderSingleNodeStatus(nodeId, statuses[nodeId]);
+    }
+  } else {
+    const statuses = getStepStatuses(state);
+    for (const step of STEP_IDS) {
+      renderSingleStepStatus(step, statuses[step]);
+    }
   }
   updateProgressCounter();
 }
 
 function updateProgressCounter() {
+  if (typeof getNodeStatuses === 'function' && typeof NODE_IDS !== 'undefined') {
+    const completed = Object.values(getNodeStatuses()).filter(isDoneStatus).length;
+    stepsProgress.textContent = `${completed} / ${NODE_IDS.length}`;
+    return;
+  }
   const completed = Object.values(getStepStatuses()).filter(isDoneStatus).length;
   stepsProgress.textContent = `${completed} / ${STEP_IDS.length}`;
 }
 
 function updateButtonStates() {
-  const statuses = getStepStatuses();
+  const statuses = getNodeStatuses();
   const anyRunning = Object.values(statuses).some(s => s === 'running');
   const autoLocked = isAutoRunLockedPhase();
   const autoScheduled = isAutoRunScheduledPhase();
@@ -10662,47 +11336,49 @@ function updateButtonStates() {
     ? selectIcloudTargetMailboxType?.value
     : latestState?.icloudTargetMailboxType;
 
-  for (const step of STEP_IDS) {
-    const btn = document.querySelector(`.step-btn[data-step="${step}"]`);
+  for (const nodeId of NODE_IDS) {
+    const step = getStepIdByNodeIdForCurrentMode(nodeId);
+    const btn = document.querySelector(`.step-btn[data-node-id="${escapeCssValue(nodeId)}"]`);
     if (!btn) continue;
 
     if (anyRunning || autoLocked || autoScheduled) {
       btn.disabled = true;
-    } else if (step === 1) {
+    } else if (NODE_IDS.indexOf(nodeId) === 0) {
       btn.disabled = false;
     } else {
-      const currentIndex = STEP_IDS.indexOf(step);
-      const prevStep = currentIndex > 0 ? STEP_IDS[currentIndex - 1] : null;
-      const prevStatus = prevStep === null ? 'completed' : statuses[prevStep];
-      const currentStatus = statuses[step];
+      const currentIndex = NODE_IDS.indexOf(nodeId);
+      const prevNodeId = currentIndex > 0 ? NODE_IDS[currentIndex - 1] : null;
+      const prevStatus = prevNodeId === null ? 'completed' : statuses[prevNodeId];
+      const currentStatus = statuses[nodeId];
       btn.disabled = !(isDoneStatus(prevStatus) || currentStatus === 'failed' || isDoneStatus(currentStatus) || currentStatus === 'stopped');
     }
   }
 
   document.querySelectorAll('.step-manual-btn').forEach((btn) => {
     const step = Number(btn.dataset.step);
-    const currentStatus = statuses[step];
-    const currentIndex = STEP_IDS.indexOf(step);
-    const prevStep = currentIndex > 0 ? STEP_IDS[currentIndex - 1] : null;
-    const prevStatus = prevStep === null ? 'completed' : statuses[prevStep];
+    const nodeId = String(btn.dataset.nodeId || getNodeIdByStepForCurrentMode(step) || '').trim();
+    const currentStatus = statuses[nodeId];
+    const currentIndex = NODE_IDS.indexOf(nodeId);
+    const prevNodeId = currentIndex > 0 ? NODE_IDS[currentIndex - 1] : null;
+    const prevStatus = prevNodeId === null ? 'completed' : statuses[prevNodeId];
 
-    if (!SKIPPABLE_STEPS.has(step) || anyRunning || autoLocked || autoScheduled || currentStatus === 'running' || isDoneStatus(currentStatus)) {
+    if (!SKIPPABLE_NODES.has(nodeId) || anyRunning || autoLocked || autoScheduled || currentStatus === 'running' || isDoneStatus(currentStatus)) {
       btn.style.display = 'none';
       btn.disabled = true;
       btn.title = '当前不可跳过';
       return;
     }
 
-    if (prevStep !== null && !isDoneStatus(prevStatus)) {
+    if (prevNodeId !== null && !isDoneStatus(prevStatus)) {
       btn.style.display = 'none';
       btn.disabled = true;
-      btn.title = `请先完成步骤 ${prevStep}`;
+      btn.title = `请先完成节点 ${prevNodeId}`;
       return;
     }
 
     btn.style.display = '';
     btn.disabled = false;
-    btn.title = `跳过步骤 ${step}`;
+    btn.title = `跳过节点 ${nodeId}`;
   });
 
   btnReset.disabled = anyRunning || autoScheduled || isAutoRunPausedPhase() || autoLocked;
@@ -10736,9 +11412,10 @@ function updateStopButtonState(active) {
 }
 
 function updateStatusDisplay(state) {
-  if (!state || !state.stepStatuses) return;
+  if (!state || !state.nodeStatuses) return;
 
   statusBar.className = 'status-bar';
+  const nodeStatuses = getNodeStatuses(state);
 
   const countdown = getActiveAutoRunCountdown();
   if (countdown) {
@@ -10768,17 +11445,17 @@ function updateStatusDisplay(state) {
   }
 
   if (isAutoRunWaitingStepPhase()) {
-    const runningSteps = getRunningSteps(state);
-    displayStatus.textContent = runningSteps.length
-      ? `自动等待步骤 ${runningSteps.join(', ')} 完成后继续${getAutoRunLabel()}`
+    const runningNodes = getRunningNodes(state);
+    displayStatus.textContent = runningNodes.length
+      ? `自动等待节点 ${runningNodes.join(', ')} 完成后继续${getAutoRunLabel()}`
       : `自动正在按最新进度准备继续${getAutoRunLabel()}`;
     statusBar.classList.add('running');
     return;
   }
 
-  const running = Object.entries(state.stepStatuses).find(([, s]) => s === 'running');
+  const running = Object.entries(nodeStatuses).find(([, s]) => s === 'running');
   if (running) {
-    displayStatus.textContent = `步骤 ${running[0]} 运行中...`;
+    displayStatus.textContent = `节点 ${running[0]} 运行中...`;
     statusBar.classList.add('running');
     return;
   }
@@ -10789,32 +11466,32 @@ function updateStatusDisplay(state) {
     return;
   }
 
-  const failed = Object.entries(state.stepStatuses).find(([, s]) => s === 'failed');
+  const failed = Object.entries(nodeStatuses).find(([, s]) => s === 'failed');
   if (failed) {
-    displayStatus.textContent = `步骤 ${failed[0]} 失败`;
+    displayStatus.textContent = `节点 ${failed[0]} 失败`;
     statusBar.classList.add('failed');
     return;
   }
 
-  const stopped = Object.entries(state.stepStatuses).find(([, s]) => s === 'stopped');
+  const stopped = Object.entries(nodeStatuses).find(([, s]) => s === 'stopped');
   if (stopped) {
-    displayStatus.textContent = `步骤 ${stopped[0]} 已停止`;
+    displayStatus.textContent = `节点 ${stopped[0]} 已停止`;
     statusBar.classList.add('stopped');
     return;
   }
 
-  const lastCompleted = Object.entries(state.stepStatuses)
+  const lastCompleted = Object.entries(nodeStatuses)
     .filter(([, s]) => isDoneStatus(s))
-    .map(([k]) => Number(k))
-    .sort((a, b) => b - a)[0];
+    .map(([nodeId]) => nodeId)
+    .sort((left, right) => NODE_IDS.indexOf(right) - NODE_IDS.indexOf(left))[0];
 
-  if (lastCompleted === STEP_IDS[STEP_IDS.length - 1]) {
-    displayStatus.textContent = (state.stepStatuses[lastCompleted] === 'manual_completed' || state.stepStatuses[lastCompleted] === 'skipped') ? '全部步骤已跳过/完成' : '全部步骤已完成';
+  if (lastCompleted === NODE_IDS[NODE_IDS.length - 1]) {
+    displayStatus.textContent = (nodeStatuses[lastCompleted] === 'manual_completed' || nodeStatuses[lastCompleted] === 'skipped') ? '全部节点已跳过/完成' : '全部节点已完成';
     statusBar.classList.add('completed');
   } else if (lastCompleted) {
-    displayStatus.textContent = (state.stepStatuses[lastCompleted] === 'manual_completed' || state.stepStatuses[lastCompleted] === 'skipped')
-      ? `步骤 ${lastCompleted} 已跳过`
-      : `步骤 ${lastCompleted} 已完成`;
+    displayStatus.textContent = (nodeStatuses[lastCompleted] === 'manual_completed' || nodeStatuses[lastCompleted] === 'skipped')
+      ? `节点 ${lastCompleted} 已跳过`
+      : `节点 ${lastCompleted} 已完成`;
   } else {
     displayStatus.textContent = '就绪';
   }
@@ -11546,7 +12223,11 @@ async function maybeTakeoverAutoRun(actionLabel) {
   return true;
 }
 
-async function handleSkipStep(step) {
+async function handleSkipNode(nodeId) {
+  const normalizedNodeId = String(nodeId || '').trim();
+  if (!normalizedNodeId) {
+    throw new Error('缺少要跳过的节点。');
+  }
   if (isAutoRunPausedPhase()) {
     const takeoverResponse = await chrome.runtime.sendMessage({
       type: 'TAKEOVER_AUTO_RUN',
@@ -11561,16 +12242,27 @@ async function handleSkipStep(step) {
   await persistCurrentSettingsForAction();
 
   const response = await chrome.runtime.sendMessage({
-    type: 'SKIP_STEP',
+    type: 'SKIP_NODE',
     source: 'sidepanel',
-    payload: { step },
+    payload: {
+      nodeId: normalizedNodeId,
+      step: getStepIdByNodeIdForCurrentMode(normalizedNodeId),
+    },
   });
 
   if (response?.error) {
     throw new Error(response.error);
   }
 
-  showToast(`步骤 ${step} 已跳过`, 'success', 2200);
+  showToast(`节点 ${normalizedNodeId} 已跳过`, 'success', 2200);
+}
+
+async function handleSkipStep(step) {
+  const nodeId = getNodeIdByStepForCurrentMode(step);
+  if (!nodeId) {
+    throw new Error(`无效步骤：${step}`);
+  }
+  return handleSkipNode(nodeId);
 }
 
 // ============================================================
@@ -11584,7 +12276,8 @@ stepsList?.addEventListener('click', async (event) => {
   }
   try {
     const step = Number(btn.dataset.step);
-    if (!(await maybeTakeoverAutoRun(`执行步骤 ${step}`))) {
+    const nodeId = String(btn.dataset.nodeId || getNodeIdByStepForCurrentMode(step) || '').trim();
+    if (!(await maybeTakeoverAutoRun(`执行节点 ${nodeId || step}`))) {
       return;
     }
     await persistCurrentSettingsForAction();
@@ -11602,12 +12295,12 @@ stepsList?.addEventListener('click', async (event) => {
         syncLatestState({ customPassword: inputPassword.value });
       }
       if (shouldExecuteStep3WithSignupPhoneIdentity(latestState)) {
-        const response = await sendSidepanelMessage({ type: 'EXECUTE_STEP', source: 'sidepanel', payload: { step } });
+        const response = await sendSidepanelMessage({ type: 'EXECUTE_NODE', source: 'sidepanel', payload: { nodeId } });
         if (response?.error) {
           throw new Error(response.error);
         }
       } else if (selectMailProvider.value === 'hotmail-api' || isLuckmailProvider()) {
-        const response = await sendSidepanelMessage({ type: 'EXECUTE_STEP', source: 'sidepanel', payload: { step } });
+        const response = await sendSidepanelMessage({ type: 'EXECUTE_NODE', source: 'sidepanel', payload: { nodeId } });
         if (response?.error) {
           throw new Error(response.error);
         }
@@ -11617,7 +12310,7 @@ stepsList?.addEventListener('click', async (event) => {
           showToast(selectMailProvider.value === GMAIL_PROVIDER ? '请先填写 Gmail 原邮箱。' : '请先填写 2925 邮箱前缀。', 'warn');
           return;
         }
-        const response = await sendSidepanelMessage({ type: 'EXECUTE_STEP', source: 'sidepanel', payload: { step, emailPrefix } });
+        const response = await sendSidepanelMessage({ type: 'EXECUTE_NODE', source: 'sidepanel', payload: { nodeId, emailPrefix } });
         if (response?.error) {
           throw new Error(response.error);
         }
@@ -11638,13 +12331,13 @@ stepsList?.addEventListener('click', async (event) => {
         if (!validateCurrentRegistrationEmail(email, { showToastOnFailure: true })) {
           return;
         }
-        const response = await sendSidepanelMessage({ type: 'EXECUTE_STEP', source: 'sidepanel', payload: { step, email } });
+        const response = await sendSidepanelMessage({ type: 'EXECUTE_NODE', source: 'sidepanel', payload: { nodeId, email } });
         if (response?.error) {
           throw new Error(response.error);
         }
       }
     } else {
-      const response = await sendSidepanelMessage({ type: 'EXECUTE_STEP', source: 'sidepanel', payload: { step } });
+      const response = await sendSidepanelMessage({ type: 'EXECUTE_NODE', source: 'sidepanel', payload: { nodeId } });
       if (response?.error) {
         throw new Error(response.error);
       }
@@ -12027,7 +12720,7 @@ btnReset.addEventListener('click', async () => {
 
   await chrome.runtime.sendMessage({ type: 'RESET', source: 'sidepanel' });
   syncLatestState({
-    stepStatuses: STEP_DEFAULT_STATUSES,
+    nodeStatuses: NODE_DEFAULT_STATUSES,
     currentHotmailAccountId: null,
     currentLuckmailPurchase: null,
     currentLuckmailMailCursor: null,
@@ -12736,20 +13429,7 @@ btnCfDomainMode.addEventListener('click', async () => {
 
 btnTempEmailDomainMode.addEventListener('click', async () => {
   try {
-    if (!cloudflareTempEmailDomainEditMode) {
-      setCloudflareTempEmailDomainEditMode(true, { clearInput: true });
-      return;
-    }
-
-    const newDomain = normalizeCloudflareTempEmailDomainValue(inputTempEmailDomain.value);
-    if (!newDomain) {
-      showToast('请输入有效的 Cloudflare Temp Email 域名。', 'warn');
-      inputTempEmailDomain.focus();
-      return;
-    }
-
-    const { domains } = getCloudflareTempEmailDomainsFromState();
-    await saveCloudflareTempEmailDomainSettings([...domains, newDomain], newDomain);
+    await syncCloudflareTempEmailDomainsFromService();
   } catch (err) {
     showToast(err.message, 'error');
   }
@@ -13296,6 +13976,7 @@ async function switchPhoneSmsProvider(nextProvider) {
 
   const currentApiKey = String(inputHeroSmsApiKey?.value || '');
   const currentMaxPrice = normalizePhoneSmsMaxPriceValue(inputHeroSmsMaxPrice?.value || '', previousProvider);
+  const currentMinPrice = normalizePhoneSmsMinPriceValue(inputHeroSmsMinPrice?.value || '', previousProvider);
   const currentSelection = typeof getPhoneSmsCountrySelectionForProvider === 'function'
     ? getPhoneSmsCountrySelectionForProvider(previousProvider, { ensureDefault: true })
     : [];
@@ -13308,6 +13989,7 @@ async function switchPhoneSmsProvider(nextProvider) {
   if (previousProvider === PHONE_SMS_PROVIDER_FIVE_SIM) {
     patch.fiveSimApiKey = currentApiKey;
     patch.fiveSimMaxPrice = currentMaxPrice;
+    patch.fiveSimMinPrice = currentMinPrice;
     patch.fiveSimCountryId = currentPrimary.id;
     patch.fiveSimCountryLabel = currentPrimary.label;
     patch.fiveSimCountryFallback = currentFallback;
@@ -13318,6 +14000,7 @@ async function switchPhoneSmsProvider(nextProvider) {
   } else {
     patch.heroSmsApiKey = currentApiKey;
     patch.heroSmsMaxPrice = currentMaxPrice;
+    patch.heroSmsMinPrice = currentMinPrice;
     patch.heroSmsCountryId = currentPrimary.id;
     patch.heroSmsCountryLabel = currentPrimary.label;
     patch.heroSmsCountryFallback = currentFallback;
@@ -13335,6 +14018,11 @@ async function switchPhoneSmsProvider(nextProvider) {
     inputHeroSmsMaxPrice.value = normalizedNextProvider === PHONE_SMS_PROVIDER_FIVE_SIM
       ? normalizeFiveSimMaxPriceValue(latestState?.fiveSimMaxPrice || '')
       : normalizeHeroSmsMaxPriceValue(latestState?.heroSmsMaxPrice || '');
+  }
+  if (typeof inputHeroSmsMinPrice !== 'undefined' && inputHeroSmsMinPrice) {
+    inputHeroSmsMinPrice.value = normalizedNextProvider === PHONE_SMS_PROVIDER_FIVE_SIM
+      ? normalizePhoneSmsMinPriceValue(latestState?.fiveSimMinPrice || '', PHONE_SMS_PROVIDER_FIVE_SIM)
+      : normalizePhoneSmsMinPriceValue(latestState?.heroSmsMinPrice || '', normalizedNextProvider);
   }
   if (inputFiveSimOperator) {
     inputFiveSimOperator.value = normalizeFiveSimOperator(latestState?.fiveSimOperator);
@@ -13399,6 +14087,34 @@ signupMethodButtons.forEach((button) => {
     markSettingsDirty(true);
     saveSettings({ silent: true }).catch(() => { });
   });
+});
+
+inputPhoneSignupReloginAfterBindEmail?.addEventListener('change', () => {
+  const stepDefinitionState = typeof resolveStepDefinitionCapabilityState === 'function'
+    ? resolveStepDefinitionCapabilityState({
+      ...(latestState || {}),
+      plusModeEnabled: typeof inputPlusModeEnabled !== 'undefined' && inputPlusModeEnabled
+        ? Boolean(inputPlusModeEnabled.checked)
+        : Boolean(latestState?.plusModeEnabled),
+      signupMethod: getSelectedSignupMethod(),
+      phoneSignupReloginAfterBindEmailEnabled: Boolean(inputPhoneSignupReloginAfterBindEmail.checked),
+    }, {
+      signupMethod: getSelectedSignupMethod(),
+    })
+    : {
+      plusModeEnabled: typeof inputPlusModeEnabled !== 'undefined' && inputPlusModeEnabled
+        ? Boolean(inputPlusModeEnabled.checked)
+        : Boolean(latestState?.plusModeEnabled),
+      signupMethod: getSelectedSignupMethod(),
+    };
+  syncStepDefinitionsForMode(stepDefinitionState.plusModeEnabled, {
+    plusPaymentMethod: getSelectedPlusPaymentMethod(latestState),
+    signupMethod: stepDefinitionState.signupMethod,
+    phoneSignupReloginAfterBindEmailEnabled: Boolean(inputPhoneSignupReloginAfterBindEmail.checked),
+  });
+  updatePhoneVerificationSettingsUI();
+  markSettingsDirty(true);
+  saveSettings({ silent: true }).catch(() => { });
 });
 
 selectPhoneSmsProvider?.addEventListener('change', async () => {
@@ -13534,11 +14250,24 @@ inputNexSmsServiceCode?.addEventListener('blur', () => {
 });
 
 inputHeroSmsReuseEnabled?.addEventListener('change', () => {
+  if (isPhoneSignupReuseLocked(latestState)) {
+    inputHeroSmsReuseEnabled.checked = false;
+    updatePhoneVerificationSettingsUI();
+    return;
+  }
   markSettingsDirty(true);
   saveSettings({ silent: true }).catch(() => { });
 });
 
 inputFreePhoneReuseEnabled?.addEventListener('change', () => {
+  if (isPhoneSignupReuseLocked(latestState)) {
+    inputFreePhoneReuseEnabled.checked = false;
+    if (inputFreePhoneReuseAutoEnabled) {
+      inputFreePhoneReuseAutoEnabled.checked = false;
+    }
+    updatePhoneVerificationSettingsUI();
+    return;
+  }
   if (!inputFreePhoneReuseEnabled.checked && inputFreePhoneReuseAutoEnabled) {
     inputFreePhoneReuseAutoEnabled.checked = false;
   }
@@ -13548,12 +14277,22 @@ inputFreePhoneReuseEnabled?.addEventListener('change', () => {
 });
 
 inputFreePhoneReuseAutoEnabled?.addEventListener('change', () => {
+  if (isPhoneSignupReuseLocked(latestState)) {
+    inputFreePhoneReuseAutoEnabled.checked = false;
+    updatePhoneVerificationSettingsUI();
+    return;
+  }
   updatePhoneVerificationSettingsUI();
   markSettingsDirty(true);
   saveSettings({ silent: true }).catch(() => { });
 });
 
 btnSaveFreeReusablePhone?.addEventListener('click', async () => {
+  if (isPhoneSignupReuseLocked(latestState)) {
+    showToast?.('手机号注册流程不能记录白嫖复用号码，请切回邮箱注册后再使用。', 'warn', 2600);
+    updatePhoneVerificationSettingsUI();
+    return;
+  }
   const phoneNumber = String(inputFreeReusablePhone?.value || '').trim();
   if (!phoneNumber) {
     showToast?.('请先填写白嫖复用手机号。', 'warn', 2200);
@@ -13597,6 +14336,11 @@ selectHeroSmsAcquirePriority?.addEventListener('change', () => {
   saveSettings({ silent: true }).catch(() => { });
 });
 selectHeroSmsPreferredActivation?.addEventListener('change', () => {
+  if (isPhoneSignupReuseLocked(latestState)) {
+    renderPhonePreferredActivationOptions(latestState);
+    updatePhoneVerificationSettingsUI();
+    return;
+  }
   markSettingsDirty(true);
   saveSettings({ silent: true }).catch(() => { });
 });
@@ -13605,6 +14349,13 @@ inputHeroSmsMaxPrice?.addEventListener('input', () => {
 });
 inputHeroSmsMaxPrice?.addEventListener('blur', () => {
   inputHeroSmsMaxPrice.value = normalizePhoneSmsMaxPriceValue(inputHeroSmsMaxPrice.value, getSelectedPhoneSmsProvider());
+  saveSettings({ silent: true }).catch(() => { });
+});
+inputHeroSmsMinPrice?.addEventListener('input', () => {
+  markSettingsDirty(true);
+});
+inputHeroSmsMinPrice?.addEventListener('blur', () => {
+  inputHeroSmsMinPrice.value = normalizePhoneSmsMinPriceValue(inputHeroSmsMinPrice.value, getSelectedPhoneSmsProvider());
   saveSettings({ silent: true }).catch(() => { });
 });
 
@@ -13924,9 +14675,9 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       }
       break;
 
-    case 'STEP_STATUS_CHANGED': {
-      const { step, status } = message.payload;
-      updateStepUI(step, status);
+    case 'NODE_STATUS_CHANGED': {
+      const { nodeId, status } = message.payload;
+      updateNodeUI(nodeId, status);
       chrome.runtime.sendMessage({ type: 'GET_STATE', source: 'sidepanel' }).then(state => {
         syncLatestState(state);
         syncAutoRunState(state);
@@ -13955,7 +14706,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         localhostUrl: null,
         email: null,
         password: null,
-        stepStatuses: STEP_DEFAULT_STATUSES,
+        nodeStatuses: NODE_DEFAULT_STATUSES,
         logs: [],
         scheduledAutoRunAt: null,
         autoRunCountdownAt: null,
@@ -14454,8 +15205,16 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       if (message.payload.nexSmsServiceCode !== undefined && inputNexSmsServiceCode) {
         inputNexSmsServiceCode.value = normalizeNexSmsServiceCodeValue(message.payload.nexSmsServiceCode);
       }
-      if (message.payload.heroSmsReuseEnabled !== undefined && inputHeroSmsReuseEnabled) {
-        inputHeroSmsReuseEnabled.checked = normalizeHeroSmsReuseEnabledValue(message.payload.heroSmsReuseEnabled);
+      if (
+        (message.payload.phoneSmsReuseEnabled !== undefined
+          || message.payload.heroSmsReuseEnabled !== undefined)
+        && inputHeroSmsReuseEnabled
+      ) {
+        inputHeroSmsReuseEnabled.checked = normalizeHeroSmsReuseEnabledValue(
+          message.payload.phoneSmsReuseEnabled,
+          message.payload.heroSmsReuseEnabled
+        );
+        updatePhoneVerificationSettingsUI();
       }
       if (message.payload.freePhoneReuseEnabled !== undefined && inputFreePhoneReuseEnabled) {
         inputFreePhoneReuseEnabled.checked = Boolean(message.payload.freePhoneReuseEnabled);
@@ -14472,6 +15231,11 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         inputHeroSmsMaxPrice.value = getSelectedPhoneSmsProvider() === PHONE_SMS_PROVIDER_FIVE_SIM
           ? normalizeFiveSimMaxPriceValue(message.payload.fiveSimMaxPrice !== undefined ? message.payload.fiveSimMaxPrice : latestState?.fiveSimMaxPrice)
           : normalizeHeroSmsMaxPriceValue(message.payload.heroSmsMaxPrice !== undefined ? message.payload.heroSmsMaxPrice : latestState?.heroSmsMaxPrice);
+      }
+      if ((message.payload.heroSmsMinPrice !== undefined || message.payload.fiveSimMinPrice !== undefined) && typeof inputHeroSmsMinPrice !== 'undefined' && inputHeroSmsMinPrice) {
+        inputHeroSmsMinPrice.value = getSelectedPhoneSmsProvider() === PHONE_SMS_PROVIDER_FIVE_SIM
+          ? normalizePhoneSmsMinPriceValue(message.payload.fiveSimMinPrice !== undefined ? message.payload.fiveSimMinPrice : latestState?.fiveSimMinPrice, PHONE_SMS_PROVIDER_FIVE_SIM)
+          : normalizePhoneSmsMinPriceValue(message.payload.heroSmsMinPrice !== undefined ? message.payload.heroSmsMinPrice : latestState?.heroSmsMinPrice, getSelectedPhoneSmsProvider());
       }
       if (message.payload.fiveSimOperator !== undefined && inputFiveSimOperator) {
         inputFiveSimOperator.value = normalizeFiveSimOperator(message.payload.fiveSimOperator);
@@ -14810,13 +15574,13 @@ Promise.allSettled([
   const fiveSimResult = results[1];
   const nexSmsResult = results[2];
   if (heroResult?.status === 'rejected') {
-    console.error('Failed to load HeroSMS countries:', heroResult.reason);
+    console.error('加载 HeroSMS 国家列表失败：', heroResult.reason);
   }
   if (fiveSimResult?.status === 'rejected') {
-    console.error('Failed to load 5sim countries:', fiveSimResult.reason);
+    console.error('加载 5sim 国家列表失败：', fiveSimResult.reason);
   }
   if (nexSmsResult?.status === 'rejected') {
-    console.error('Failed to load NexSMS countries:', nexSmsResult.reason);
+    console.error('加载 NexSMS 国家列表失败：', nexSmsResult.reason);
   }
   return restoreState().then(() => {
     syncPasswordToggleLabel();

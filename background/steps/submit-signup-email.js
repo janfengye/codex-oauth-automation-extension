@@ -5,7 +5,7 @@
     const {
       addLog,
       chrome,
-      completeStepFromBackground,
+      completeNodeFromBackground,
       ensureContentScriptReadyOnTab,
       ensureSignupAuthEntryPageReady,
       ensureSignupEntryPageReady,
@@ -37,7 +37,7 @@
 
     function isRetryableStep2TransportErrorMessage(errorLike) {
       const message = getErrorMessage(errorLike);
-      return /Content script on signup-page did not respond in \d+s|Receiving end does not exist|message channel closed|A listener indicated an asynchronous response|port closed before a response was received|did not respond in \d+s/i.test(message);
+      return /Content script on signup-page did not respond in \d+s|内容脚本\s+\d+(?:\.\d+)?\s*秒内未响应|Receiving end does not exist|message channel closed|A listener indicated an asynchronous response|port closed before a response was received|did not respond in \d+s/i.test(message);
     }
 
     function isLikelyLoggedInChatgptHomeUrl(rawUrl) {
@@ -152,7 +152,8 @@
 
       try {
         return await sendToContentScriptResilient('signup-page', {
-          type: 'EXECUTE_STEP',
+          type: 'EXECUTE_NODE',
+          nodeId: 'submit-signup-email',
           step: 2,
           source: 'background',
           payload,
@@ -391,7 +392,7 @@
         skipUrlWait: Boolean(step2Result?.alreadyOnPasswordPage),
       });
 
-      await completeStepFromBackground(2, {
+      await completeNodeFromBackground('submit-signup-email', {
         accountIdentifierType: 'phone',
         accountIdentifier: phoneNumber,
         signupPhoneNumber: phoneNumber,
@@ -484,7 +485,7 @@
         skipUrlWait: Boolean(step2Result?.alreadyOnPasswordPage),
       });
 
-      await completeStepFromBackground(2, {
+      await completeNodeFromBackground('submit-signup-email', {
         email: resolvedEmail,
         accountIdentifierType: 'email',
         accountIdentifier: resolvedEmail,

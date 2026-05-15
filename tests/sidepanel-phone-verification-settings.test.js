@@ -7,6 +7,7 @@ const {
 } = require('../mail-provider-utils');
 
 const sidepanelSource = fs.readFileSync('sidepanel/sidepanel.js', 'utf8');
+const sidepanelHtml = fs.readFileSync('sidepanel/sidepanel.html', 'utf8');
 
 function extractFunction(name) {
   const markers = [`async function ${name}(`, `function ${name}(`];
@@ -98,6 +99,7 @@ test('sidepanel html exposes phone verification toggle and multi-provider SMS ro
   assert.doesNotMatch(html, /id="select-hero-sms-country-fallback"/);
   assert.match(html, /id="row-hero-sms-api-key"/);
   assert.match(html, /id="row-hero-sms-max-price"/);
+  assert.match(html, /id="input-hero-sms-min-price"/);
   assert.match(html, /id="btn-phone-sms-balance"/);
   assert.match(html, /id="display-phone-sms-balance"/);
   assert.match(html, /id="row-five-sim-operator"/);
@@ -199,7 +201,7 @@ test('sidepanel source wires runtime signup phone field to background sync messa
   assert.match(sidepanelSource, /final \? 'SAVE_SIGNUP_PHONE' : 'SET_SIGNUP_PHONE_STATE'/);
   assert.match(sidepanelSource, /message\.payload\.signupPhoneNumber !== undefined/);
   assert.match(sidepanelSource, /await persistSignupPhoneInputForAction\(\);\s*await saveSettings/);
-  assert.match(sidepanelSource, /if \(shouldExecuteStep3WithSignupPhoneIdentity\(latestState\)\)[\s\S]*payload: \{ step \}/);
+  assert.match(sidepanelSource, /if \(shouldExecuteStep3WithSignupPhoneIdentity\(latestState\)\)[\s\S]*type:\s*'EXECUTE_NODE'[\s\S]*payload: \{ nodeId \}/);
   assert.match(sidepanelSource, /async function handleSkipStep\(step\)[\s\S]*await persistCurrentSettingsForAction\(\);/);
   assert.match(sidepanelSource, /inputSignupPhone\.addEventListener\('input'[\s\S]*signupPhoneInputDirty = true/);
 });
@@ -344,6 +346,14 @@ return {
   api.setFlow('openai');
   assert.equal(api.canSelectPhoneSignupMethod(), true);
   assert.equal(api.shouldWarnCpaPhoneSignup('phone', 'cpa'), true);
+});
+
+test('phone signup relogin-after-bind-email switch is wired into UI and step definitions', () => {
+  assert.match(sidepanelHtml, /row-phone-signup-relogin-after-bind-email/);
+  assert.match(sidepanelHtml, /input-phone-signup-relogin-after-bind-email/);
+  assert.match(sidepanelSource, /phoneSignupReloginAfterBindEmailEnabled: typeof inputPhoneSignupReloginAfterBindEmail !== 'undefined'/);
+  assert.match(sidepanelSource, /phoneSignupReloginAfterBindEmailEnabled: Boolean\(state\?\.phoneSignupReloginAfterBindEmailEnabled\)/);
+  assert.match(sidepanelSource, /nextPhoneSignupReloginAfterBindEmailEnabled !== currentPhoneSignupReloginAfterBindEmailEnabled/);
 });
 
 test('manual step 3 uses phone identity without requiring registration email', () => {
@@ -518,6 +528,28 @@ test('updatePhoneVerificationSettingsUI toggles SMS rows from the sms switch and
   const api = new Function(`
 let phoneVerificationSectionExpanded = false;
 let latestState = {};
+let phoneSignupReuseUiWasLocked = false;
+const PHONE_SIGNUP_REUSE_LOCK_TITLE = '手机号注册流程不使用号码复用，切回邮箱注册后会恢复原设置';
+const SIGNUP_METHOD_EMAIL = 'email';
+const SIGNUP_METHOD_PHONE = 'phone';
+const DEFAULT_SIGNUP_METHOD = SIGNUP_METHOD_EMAIL;
+const DEFAULT_HERO_SMS_REUSE_ENABLED = true;
+function createMockClassList() {
+  const values = new Set();
+  return {
+    toggle(name, force) {
+      const enabled = force === undefined ? !values.has(name) : Boolean(force);
+      if (enabled) values.add(name);
+      else values.delete(name);
+    },
+    contains(name) {
+      return values.has(name);
+    },
+  };
+}
+function createMockRow() {
+  return { style: { display: 'none' }, classList: createMockClassList(), title: '' };
+}
 const inputPhoneVerificationEnabled = { checked: false };
 const rowPhoneVerificationEnabled = { style: { display: 'none' } };
 const rowPhoneVerificationFold = { style: { display: 'none' } };
@@ -582,13 +614,24 @@ const rowHeroSmsCurrentNumber = { style: { display: 'none' } };
 const rowHeroSmsCurrentCountdown = { style: { display: 'none' } };
 const rowHeroSmsPriceTiers = { style: { display: 'none' } };
 const rowHeroSmsCurrentCode = { style: { display: 'none' } };
-const rowHeroSmsPreferredActivation = { style: { display: 'none' } };
+const rowHeroSmsPreferredActivation = createMockRow();
 const rowPhoneVerificationResendCount = { style: { display: 'none' } };
 const rowPhoneReplacementLimit = { style: { display: 'none' } };
 const rowPhoneCodeWaitSeconds = { style: { display: 'none' } };
 const rowPhoneCodeTimeoutWindows = { style: { display: 'none' } };
 const rowPhoneCodePollIntervalSeconds = { style: { display: 'none' } };
 const rowPhoneCodePollMaxRounds = { style: { display: 'none' } };
+const rowFreePhoneReuseEnabled = createMockRow();
+const rowFreePhoneReuseAutoEnabled = createMockRow();
+const rowFreeReusablePhone = createMockRow();
+const heroSmsReuseRow = createMockRow();
+const inputHeroSmsReuseEnabled = { checked: true, disabled: false, closest: () => heroSmsReuseRow };
+const inputFreePhoneReuseEnabled = { checked: true, disabled: false };
+const inputFreePhoneReuseAutoEnabled = { checked: true, disabled: false };
+const selectHeroSmsPreferredActivation = { disabled: false };
+const inputFreeReusablePhone = { disabled: false };
+const btnSaveFreeReusablePhone = { disabled: false };
+const btnClearFreeReusablePhone = { disabled: false };
 const PHONE_SMS_PROVIDER_HERO_SMS = 'hero-sms';
 const PHONE_SMS_PROVIDER_FIVE_SIM = '5sim';
 const PHONE_SMS_PROVIDER_NEXSMS = 'nexsms';
@@ -601,10 +644,23 @@ function updateSignupMethodUI() {
 function syncSignupPhoneInputFromState() {
   rowSignupPhone.style.display = inputPhoneVerificationEnabled.checked && latestState.signupPhoneNumber ? '' : 'none';
 }
-function setFreePhoneReuseControlsLocked() {}
+function setFreePhoneReuseControlsLocked(locked) {
+  inputFreePhoneReuseEnabled.disabled = Boolean(locked);
+  inputFreePhoneReuseAutoEnabled.disabled = Boolean(locked)
+    || !Boolean(inputFreePhoneReuseEnabled.checked)
+    || !Boolean(inputPhoneVerificationEnabled.checked && phoneVerificationSectionExpanded);
+}
 function isAutoRunLockedPhase() { return false; }
 function isAutoRunScheduledPhase() { return false; }
 
+${extractFunction('normalizeSignupMethod')}
+${extractFunction('normalizeHeroSmsReuseEnabledValue')}
+${extractFunction('isPhoneSignupReuseLocked')}
+${extractFunction('getStoredPhoneSmsReuseEnabled')}
+${extractFunction('getStoredFreePhoneReuseEnabled')}
+${extractFunction('getStoredFreePhoneReuseAutoEnabled')}
+${extractFunction('restorePhoneReuseControlsFromState')}
+${extractFunction('setElementReuseLockedState')}
 ${extractFunction('updatePhoneVerificationSettingsUI')}
 
 return {
@@ -641,12 +697,23 @@ return {
   rowHeroSmsPriceTiers,
   rowHeroSmsCurrentCode,
   rowHeroSmsPreferredActivation,
+  rowFreePhoneReuseEnabled,
+  rowFreePhoneReuseAutoEnabled,
+  rowFreeReusablePhone,
   rowPhoneVerificationResendCount,
   rowPhoneReplacementLimit,
   rowPhoneCodeWaitSeconds,
   rowPhoneCodeTimeoutWindows,
   rowPhoneCodePollIntervalSeconds,
   rowPhoneCodePollMaxRounds,
+  heroSmsReuseRow,
+  inputHeroSmsReuseEnabled,
+  inputFreePhoneReuseEnabled,
+  inputFreePhoneReuseAutoEnabled,
+  selectHeroSmsPreferredActivation,
+  inputFreeReusablePhone,
+  btnSaveFreeReusablePhone,
+  btnClearFreeReusablePhone,
   setSelectedPhoneSmsProvider(value) { selectPhoneSmsProvider.value = value; },
   updatePhoneVerificationSettingsUI,
 };
@@ -732,6 +799,46 @@ return {
   assert.equal(api.rowPhoneCodePollIntervalSeconds.style.display, '');
   assert.equal(api.rowPhoneCodePollMaxRounds.style.display, '');
 
+  api.setLatestState({
+    signupMethod: 'phone',
+    signupPhoneNumber: '66959916439',
+    phoneSmsReuseEnabled: true,
+    freePhoneReuseEnabled: true,
+    freePhoneReuseAutoEnabled: true,
+  });
+  api.updatePhoneVerificationSettingsUI();
+  assert.equal(api.inputHeroSmsReuseEnabled.checked, false);
+  assert.equal(api.inputHeroSmsReuseEnabled.disabled, true);
+  assert.equal(api.inputFreePhoneReuseEnabled.checked, false);
+  assert.equal(api.inputFreePhoneReuseEnabled.disabled, true);
+  assert.equal(api.inputFreePhoneReuseAutoEnabled.checked, false);
+  assert.equal(api.inputFreePhoneReuseAutoEnabled.disabled, true);
+  assert.equal(api.selectHeroSmsPreferredActivation.disabled, true);
+  assert.equal(api.inputFreeReusablePhone.disabled, true);
+  assert.equal(api.btnSaveFreeReusablePhone.disabled, true);
+  assert.equal(api.btnClearFreeReusablePhone.disabled, true);
+  assert.equal(api.rowFreePhoneReuseEnabled.classList.contains('is-disabled'), true);
+  assert.equal(api.rowFreeReusablePhone.classList.contains('is-disabled'), true);
+
+  api.setLatestState({
+    signupMethod: 'email',
+    signupPhoneNumber: '',
+    phoneSmsReuseEnabled: true,
+    freePhoneReuseEnabled: true,
+    freePhoneReuseAutoEnabled: true,
+  });
+  api.updatePhoneVerificationSettingsUI();
+  assert.equal(api.inputHeroSmsReuseEnabled.checked, true);
+  assert.equal(api.inputHeroSmsReuseEnabled.disabled, false);
+  assert.equal(api.inputFreePhoneReuseEnabled.checked, true);
+  assert.equal(api.inputFreePhoneReuseEnabled.disabled, false);
+  assert.equal(api.inputFreePhoneReuseAutoEnabled.checked, true);
+  assert.equal(api.inputFreePhoneReuseAutoEnabled.disabled, false);
+  assert.equal(api.selectHeroSmsPreferredActivation.disabled, false);
+  assert.equal(api.inputFreeReusablePhone.disabled, false);
+  assert.equal(api.btnSaveFreeReusablePhone.disabled, false);
+  assert.equal(api.btnClearFreeReusablePhone.disabled, false);
+
   api.setSelectedPhoneSmsProvider('5sim');
   api.updatePhoneVerificationSettingsUI();
   assert.equal(api.rowFiveSimApiKey.style.display, '');
@@ -756,6 +863,21 @@ let latestState = {
   mail2925UseAccountPool: false,
   currentMail2925AccountId: '',
   fiveSimCountryOrder: ['thailand', 'england'],
+  heroSmsMinPrice: '0.0444',
+  fiveSimMinPrice: '0.3333',
+  phoneSmsReuseEnabled: false,
+  heroSmsReuseEnabled: false,
+  freePhoneReuseEnabled: false,
+  freePhoneReuseAutoEnabled: false,
+  phonePreferredActivation: {
+    provider: 'hero-sms',
+    activationId: 'stored-activation',
+    phoneNumber: '66950001111',
+    countryId: 52,
+    countryLabel: 'Thailand',
+    successfulUses: 2,
+    maxUses: 3,
+  },
 };
 let cloudflareDomainEditMode = false;
 let cloudflareTempEmailDomainEditMode = false;
@@ -820,6 +942,7 @@ function getSelectedPhonePreferredActivation() {
   };
 }
 const inputHeroSmsMaxPrice = { value: '0.12' };
+const inputHeroSmsMinPrice = { value: '0.03' };
 const inputHeroSmsPreferredPrice = { value: '0.0512' };
 const inputPhoneReplacementLimit = { value: '5' };
 const inputPhoneCodeWaitSeconds = { value: '75' };
@@ -853,6 +976,9 @@ const PHONE_SMS_PROVIDER_HERO_SMS = 'hero-sms';
 const PHONE_SMS_PROVIDER_FIVE_SIM = '5sim';
 const PHONE_SMS_PROVIDER_NEXSMS = 'nexsms';
 const DEFAULT_PHONE_SMS_PROVIDER = PHONE_SMS_PROVIDER_HERO_SMS;
+const SIGNUP_METHOD_EMAIL = 'email';
+const SIGNUP_METHOD_PHONE = 'phone';
+const DEFAULT_SIGNUP_METHOD = SIGNUP_METHOD_EMAIL;
 const DEFAULT_FIVE_SIM_COUNTRY_ID = 'vietnam';
 const DEFAULT_FIVE_SIM_COUNTRY_LABEL = '越南 (Vietnam)';
 const DEFAULT_FIVE_SIM_OPERATOR = 'any';
@@ -900,6 +1026,7 @@ ${extractFunction('normalizeFiveSimOperator')}
 ${extractFunction('normalizeFiveSimMaxPriceValue')}
 ${extractFunction('normalizeFiveSimCountryFallbackList')}
 ${extractFunction('normalizePhoneSmsMaxPriceValue')}
+${extractFunction('normalizePhoneSmsMinPriceValue')}
 ${extractFunction('normalizeHeroSmsMaxPriceValue')}
 ${extractFunction('normalizePhoneVerificationReplacementLimit')}
 ${extractFunction('normalizePhoneCodeWaitSecondsValue')}
@@ -911,6 +1038,11 @@ ${extractFunction('normalizeHeroSmsAcquirePriority')}
 ${extractFunction('normalizeHeroSmsCountryId')}
 ${extractFunction('normalizeHeroSmsCountryLabel')}
 ${extractFunction('getSelectedHeroSmsCountryOption')}
+${extractFunction('normalizeSignupMethod')}
+${extractFunction('isPhoneSignupReuseLocked')}
+${extractFunction('getStoredPhoneSmsReuseEnabled')}
+${extractFunction('getStoredFreePhoneReuseEnabled')}
+${extractFunction('getStoredFreePhoneReuseAutoEnabled')}
 function syncHeroSmsFallbackSelectionOrderFromSelect() {
   return [{ id: 52, label: 'Thailand' }, { id: 16, label: 'United Kingdom' }];
 }
@@ -943,19 +1075,21 @@ return { collectSettingsPayload };
   assert.equal(payload.nexSmsApiKey, 'nex-key');
   assert.deepStrictEqual(payload.nexSmsCountryOrder, [1]);
   assert.equal(payload.nexSmsServiceCode, 'ot');
-  assert.equal(payload.heroSmsReuseEnabled, true);
-  assert.equal(payload.freePhoneReuseEnabled, true);
-  assert.equal(payload.freePhoneReuseAutoEnabled, true);
+  assert.equal(payload.phoneSmsReuseEnabled, false);
+  assert.equal(payload.heroSmsReuseEnabled, false);
+  assert.equal(payload.freePhoneReuseEnabled, false);
+  assert.equal(payload.freePhoneReuseAutoEnabled, false);
   assert.equal(payload.heroSmsAcquirePriority, 'price');
+  assert.equal(payload.heroSmsMinPrice, '0.03');
   assert.equal(payload.heroSmsMaxPrice, '0.12');
   assert.equal(payload.heroSmsPreferredPrice, '0.0512');
   assert.deepStrictEqual(payload.phonePreferredActivation, {
     provider: 'hero-sms',
-    activationId: 'demo-activation',
-    phoneNumber: '66958889999',
+    activationId: 'stored-activation',
+    phoneNumber: '66950001111',
     countryId: 52,
     countryLabel: 'Thailand',
-    successfulUses: 0,
+    successfulUses: 2,
     maxUses: 3,
   });
   assert.equal(payload.phoneVerificationReplacementLimit, 5);
@@ -968,6 +1102,7 @@ return { collectSettingsPayload };
   assert.deepStrictEqual(payload.heroSmsCountryFallback, [{ id: 16, label: 'United Kingdom' }]);
   assert.equal(payload.fiveSimApiKey, 'five-sim-key');
   assert.equal(payload.fiveSimCountryId, 'vietnam');
+  assert.equal(payload.fiveSimMinPrice, '0.3333');
 });
 
 test('switchPhoneSmsProvider saves API keys independently when the select value has already changed', async () => {
@@ -976,7 +1111,9 @@ let latestState = {
   phoneSmsProvider: 'hero-sms',
   heroSmsApiKey: 'hero-old',
   fiveSimApiKey: 'five-old',
+  heroSmsMinPrice: '0.04',
   heroSmsMaxPrice: '0.11',
+  fiveSimMinPrice: '0.88',
   fiveSimMaxPrice: '12',
   heroSmsCountryId: 52,
   heroSmsCountryLabel: 'Thailand',
@@ -997,6 +1134,7 @@ const FIVE_SIM_SUPPORTED_COUNTRY_ID_SET = new Set(['indonesia', 'thailand', 'vie
 const HERO_SMS_SUPPORTED_COUNTRY_ID_SET = new Set(['6', '52', '10']);
 const selectPhoneSmsProvider = { value: 'hero-sms', dataset: { activeProvider: 'hero-sms' } };
 const inputHeroSmsApiKey = { value: 'hero-live' };
+const inputHeroSmsMinPrice = { value: '0.03' };
 const inputHeroSmsMaxPrice = { value: '0.22' };
 const inputFiveSimOperator = { value: 'any' };
 const displayHeroSmsPriceTiers = { textContent: '' };
@@ -1014,6 +1152,7 @@ ${extractFunction('normalizeFiveSimCountryLabel')}
 ${extractFunction('normalizeFiveSimOperator')}
 ${extractFunction('normalizeFiveSimMaxPriceValue')}
 ${extractFunction('normalizeHeroSmsMaxPriceValue')}
+${extractFunction('normalizePhoneSmsMinPriceValue')}
 ${extractFunction('normalizePhoneSmsMaxPriceValue')}
 ${extractFunction('normalizeHeroSmsCountryId')}
 ${extractFunction('normalizeHeroSmsCountryLabel')}
@@ -1041,6 +1180,7 @@ ${extractFunction('switchPhoneSmsProvider')}
 return {
   selectPhoneSmsProvider,
   inputHeroSmsApiKey,
+  inputHeroSmsMinPrice,
   get latestState() { return latestState; },
   get savedPayload() { return savedPayload; },
   switchPhoneSmsProvider,
@@ -1054,7 +1194,10 @@ return {
   assert.equal(api.latestState.phoneSmsProvider, '5sim');
   assert.equal(api.latestState.heroSmsApiKey, 'hero-live');
   assert.equal(api.latestState.fiveSimApiKey, 'five-old');
+  assert.equal(api.latestState.heroSmsMinPrice, '0.03');
+  assert.equal(api.latestState.fiveSimMinPrice, '0.88');
   assert.equal(api.inputHeroSmsApiKey.value, 'five-old');
+  assert.equal(api.inputHeroSmsMinPrice.value, '0.88');
   assert.equal(api.selectPhoneSmsProvider.dataset.activeProvider, '5sim');
 
   api.inputHeroSmsApiKey.value = 'five-live';
@@ -1064,10 +1207,15 @@ return {
   assert.equal(api.latestState.phoneSmsProvider, 'hero-sms');
   assert.equal(api.latestState.heroSmsApiKey, 'hero-live');
   assert.equal(api.latestState.fiveSimApiKey, 'five-live');
+  assert.equal(api.latestState.heroSmsMinPrice, '0.03');
+  assert.equal(api.latestState.fiveSimMinPrice, '0.88');
   assert.equal(api.inputHeroSmsApiKey.value, 'hero-live');
+  assert.equal(api.inputHeroSmsMinPrice.value, '0.03');
   assert.equal(api.selectPhoneSmsProvider.dataset.activeProvider, 'hero-sms');
   assert.equal(api.savedPayload.heroSmsApiKey, 'hero-live');
   assert.equal(api.savedPayload.fiveSimApiKey, 'five-live');
+  assert.equal(api.savedPayload.heroSmsMinPrice, '0.03');
+  assert.equal(api.savedPayload.fiveSimMinPrice, '0.88');
 });
 
 test('formatPhoneSmsPriceEntriesSummary treats HeroSMS physicalCount=0 as out of stock even when count is positive', () => {
@@ -1106,6 +1254,7 @@ const DEFAULT_FIVE_SIM_PRODUCT = 'openai';
 const FIVE_SIM_SUPPORTED_COUNTRY_ID_SET = new Set(['indonesia', 'thailand', 'vietnam']);
 const HERO_SMS_SUPPORTED_COUNTRY_ID_SET = new Set(['6', '52', '10']);
 const inputHeroSmsMaxPrice = { value: '' };
+const inputHeroSmsMinPrice = { value: '0.1' };
 const inputHeroSmsApiKey = { value: '' };
 const inputFiveSimOperator = { value: 'any' };
 const inputFiveSimProduct = { value: 'openai' };
@@ -1125,6 +1274,7 @@ ${extractFunction('normalizeFiveSimCountryCode')}
 ${extractFunction('normalizeFiveSimProductValue')}
 ${extractFunction('normalizeFiveSimOperator')}
 ${extractFunction('normalizePhoneSmsMaxPriceValue')}
+${extractFunction('normalizePhoneSmsMinPriceValue')}
 ${extractFunction('normalizeFiveSimMaxPriceValue')}
 ${extractFunction('normalizeHeroSmsMaxPriceValue')}
 ${extractFunction('normalizeHeroSmsPriceForPreview')}
@@ -1134,6 +1284,12 @@ ${extractFunction('collectHeroSmsPriceEntriesForPreview')}
 ${extractFunction('formatPhoneSmsPriceEntriesSummary')}
 ${extractFunction('describeHeroSmsPreviewPayload')}
 ${extractFunction('summarizeHeroSmsPreviewError')}
+${extractFunction('resolvePhoneSmsPricePreviewRange')}
+${extractFunction('isPhoneSmsPriceWithinPreviewRange')}
+${extractFunction('filterPhoneSmsPriceEntriesForPreviewRange')}
+${extractFunction('filterPhoneSmsPriceValuesForPreviewRange')}
+${extractFunction('formatPhoneSmsPriceRangePreviewText')}
+${extractFunction('buildPhoneSmsPriceRangePreviewMessage')}
 ${extractFunction('formatPriceTiersForPreview')}
 ${extractFunction('formatPriceTiersWithZeroStockForPreview')}
 function normalizeHeroSmsFetchErrorMessage(error) { return error?.message || String(error); }
@@ -1192,7 +1348,7 @@ return {
 
   assert.equal(
     api.displayHeroSmsPriceTiers.textContent,
-    '5sim:\n越南 (Vietnam): 最低 0.1282；档位：0.0769(x0), 0.1282(x4608)'
+    '5sim:\n越南 (Vietnam): 区间内最低 0.1282；档位：0.1282(x4608)'
   );
   assert.equal(api.rowHeroSmsPriceTiers.style.display, '');
   assert.deepStrictEqual(
@@ -1209,5 +1365,13 @@ test('hero sms max price input does not auto-save partial typing states', () => 
   assert.doesNotMatch(
     sidepanelSource,
     /inputHeroSmsMaxPrice\?\.\s*addEventListener\('input',\s*\(\)\s*=>\s*\{\s*markSettingsDirty\(true\);\s*scheduleSettingsAutoSave\(\);/
+  );
+  assert.match(
+    sidepanelSource,
+    /inputHeroSmsMinPrice\?\.\s*addEventListener\('input',\s*\(\)\s*=>\s*\{\s*markSettingsDirty\(true\);\s*\}\);/
+  );
+  assert.doesNotMatch(
+    sidepanelSource,
+    /inputHeroSmsMinPrice\?\.\s*addEventListener\('input',\s*\(\)\s*=>\s*\{\s*markSettingsDirty\(true\);\s*scheduleSettingsAutoSave\(\);/
   );
 });

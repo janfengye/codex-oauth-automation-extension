@@ -79,7 +79,7 @@
       addLog: rawAddLog = async () => {},
       broadcastDataUpdate,
       chrome,
-      completeStepFromBackground,
+      completeNodeFromBackground,
       ensureContentScriptReadyOnTabUntilStopped,
       fetch: fetchImpl = null,
       generateRandomName,
@@ -1018,7 +1018,7 @@
               plusCheckoutSource: PLUS_PAYMENT_METHOD_GPC_HELPER,
             });
             await addLog('步骤 7：GPC 任务已完成，准备继续下一步。', 'ok');
-            await completeStepFromBackground(7, {
+            await completeNodeFromBackground('plus-checkout-billing', {
               plusCheckoutSource: PLUS_PAYMENT_METHOD_GPC_HELPER,
             });
             return;
@@ -1251,7 +1251,7 @@
       }
       const data = await response.json();
       if (data?.status !== 'ok') {
-        throw new Error(data?.message || data?.status || 'unknown response');
+        throw new Error(data?.message || data?.status || '未知响应');
       }
       return buildDirectAddressSeed(countryCode, data.address || {}, fallbackSeed);
     }
@@ -1920,7 +1920,7 @@
         throw new Error(`步骤 7：多次提交账单地址后仍未跳转到 ${paymentConfig.label}。${lastSubmitError}`);
       }
 
-      await completeStepFromBackground(7, {
+      await completeNodeFromBackground('plus-checkout-billing', {
         plusBillingCountryText: result?.countryText || '',
       });
     }

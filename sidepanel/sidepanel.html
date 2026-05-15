@@ -725,14 +725,14 @@
           <div id="temp-email-domain-picker" class="editable-list-picker">
             <button id="btn-temp-email-domain-menu" class="data-select editable-list-trigger" type="button"
               aria-haspopup="listbox" aria-expanded="false">
-              <span id="temp-email-domain-current" class="truncate">请先添加域名</span>
+              <span id="temp-email-domain-current" class="truncate">请先更新域名</span>
               <span class="editable-list-caret" aria-hidden="true"></span>
             </button>
             <div id="temp-email-domain-menu" class="editable-list-menu" role="listbox" hidden></div>
           </div>
           <input type="text" id="input-temp-email-domain" class="data-input" placeholder="例如 mail.example.com"
             style="display:none;" />
-          <button id="btn-temp-email-domain-mode" class="btn btn-outline btn-sm" type="button">添加</button>
+          <button id="btn-temp-email-domain-mode" class="btn btn-outline btn-sm" type="button">更新</button>
         </div>
       </div>
     </div>
@@ -1295,6 +1295,17 @@
                 <button type="button" class="choice-btn" data-signup-method="phone">手机号注册</button>
               </div>
             </div>
+            <div class="data-row" id="row-phone-signup-relogin-after-bind-email" style="display:none;">
+              <span class="data-label">绑定后重登</span>
+              <label class="toggle-switch" for="input-phone-signup-relogin-after-bind-email"
+                title="手机号注册绑定邮箱后，跳过绑定邮箱验证码，重新刷新 OAuth 并使用绑定邮箱登录">
+                <input type="checkbox" id="input-phone-signup-relogin-after-bind-email" />
+                <span class="toggle-switch-track" aria-hidden="true">
+                  <span class="toggle-switch-thumb"></span>
+                </span>
+              </label>
+              <span class="data-value">绑定邮箱后切入邮箱注册模式 OAuth 尾部</span>
+            </div>
             <div class="data-row" id="row-account-run-history-helper-base-url" style="display:none;">
               <span class="data-label">同步服务</span>
               <input type="text" id="input-account-run-history-helper-base-url" class="data-input mono"
@@ -1464,7 +1475,7 @@
                 placeholder="ot" />
             </div>
             <div class="data-row" id="row-hero-sms-max-price" style="display:none;">
-              <span class="data-label">价格</span>
+              <span class="data-label">价格区间</span>
               <div class="data-inline hero-sms-price-preview-stack">
                 <div class="hero-sms-price-preview-head">
                   <button id="btn-hero-sms-price-preview" class="btn btn-outline btn-xs data-inline-btn" type="button">查询价格</button>
@@ -1476,9 +1487,15 @@
                 </div>
                 <div class="hero-sms-price-controls-grid">
                   <div class="hero-sms-price-control">
+                    <span class="hero-sms-settings-caption">最低购买价</span>
+                    <div class="setting-controls">
+                      <input type="number" id="input-hero-sms-min-price" class="data-input auto-delay-input mono hero-sms-max-price-input" placeholder="0.05" min="0" step="0.0001" title="接码最低购买价；可空（空=不设下限）" />
+                    </div>
+                  </div>
+                  <div class="hero-sms-price-control">
                     <span class="hero-sms-settings-caption">价格上限</span>
                     <div class="setting-controls">
-                      <input type="number" id="input-hero-sms-max-price" class="data-input auto-delay-input mono hero-sms-max-price-input" placeholder="0.12" min="0" step="0.0001" title="接码价格上限；可空（空=自动价格）" />
+                      <input type="number" id="input-hero-sms-max-price" class="data-input auto-delay-input mono hero-sms-max-price-input" placeholder="0.12" min="0" step="0.0001" title="接码价格上限；可空（空=不设上限）" />
                     </div>
                   </div>
                   <div class="hero-sms-price-control">
@@ -1543,7 +1560,7 @@
                 <div id="row-phone-code-poll-max-rounds" class="hero-sms-settings-cell" style="display:none;">
                   <span class="hero-sms-settings-caption">轮询次数</span>
                   <div class="setting-controls">
-                    <input type="number" id="input-phone-code-poll-max-rounds" class="data-input auto-delay-input" value="4" min="1" max="120" step="1" title="每轮验证码等待窗口最多轮询次数" />
+                    <input type="number" id="input-phone-code-poll-max-rounds" class="data-input auto-delay-input" value="4" min="1" max="120" step="1" title="每个验证码等待窗口的基础轮询次数；如果低于等待时长和轮询间隔所需次数，会自动补足，避免提前结束" />
                     <span class="data-unit">次</span>
                   </div>
                 </div>

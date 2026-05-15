@@ -12,8 +12,9 @@
       closeConflictingTabsForSource,
       CLOUDFLARE_TEMP_EMAIL_PROVIDER,
       CLOUD_MAIL_PROVIDER = 'cloudmail',
-      completeStepFromBackground,
+      completeNodeFromBackground,
       confirmCustomVerificationStepBypassRequest,
+      getNodeIdByStepForState,
       getHotmailVerificationPollConfig,
       getHotmailVerificationRequestTimestamp,
       handleMail2925LimitReachedError,
@@ -32,6 +33,7 @@
       sendToContentScript,
       sendToContentScriptResilient,
       sendToMailContentScriptResilient,
+      setNodeStatus,
       setState,
       sleepWithStop,
       throwIfStopped,
@@ -65,9 +67,16 @@
       return rawAddLog(normalizeVerificationLogMessage(message), level, normalizedOptions);
     }
 
+    async function getNodeIdForStep(step) {
+      const state = typeof getState === 'function' ? await getState() : {};
+      return typeof getNodeIdByStepForState === 'function'
+        ? String(getNodeIdByStepForState(step, state) || '').trim()
+        : '';
+    }
+
     const isRetryableVerificationTransportError = typeof deps.isRetryableContentScriptTransportError === 'function'
       ? deps.isRetryableContentScriptTransportError
-      : ((error) => /back\/forward cache|message channel is closed|Receiving end does not exist|port closed before a response was received|A listener indicated an asynchronous response|did not respond in \d+s/i.test(
+      : ((error) => /back\/forward cache|message channel is closed|Receiving end does not exist|port closed before a response was received|A listener indicated an asynchronous response|内容脚本\s+\d+(?:\.\d+)?\s*秒内未响应|did not respond in \d+s/i.test(
         String(typeof error === 'string' ? error : error?.message || '')
       ));
 
@@ -404,7 +413,11 @@
         signupVerificationRequestedAt: null,
         loginVerificationRequestedAt: null,
       });
-      await deps.setStepStatus(completionStep, 'skipped');
+      const completionNodeId = await getNodeIdForStep(completionStep);
+      if (!completionNodeId) {
+        throw new Error(`步骤 ${completionStep} 未映射到验证码节点。`);
+      }
+      await setNodeStatus(completionNodeId, 'skipped');
       await addLog(`步骤 ${completionStep}：已确认手动完成${verificationLabel}验证码输入，当前步骤已跳过。`, 'warn');
     }
 
@@ -873,6 +886,8 @@
         onResendRequestedAt,
         maxRounds: _ignoredMaxRounds,
         maxResendRequests: _ignoredMaxResendRequests,
+        initialPollMaxAttempts: _ignoredInitialPollMaxAttempts,
+        pollAttemptPlan: _ignoredPollAttemptPlan,
         ...cleanPollOverrides
       } = pollOverrides;
       const basePayload = {
@@ -926,6 +941,8 @@
         onResendRequestedAt,
         maxRounds: _ignoredMaxRounds,
         maxResendRequests: _ignoredMaxResendRequests,
+        initialPollMaxAttempts: _ignoredInitialPollMaxAttempts,
+        pollAttemptPlan: _ignoredPollAttemptPlan,
         ...cleanPollOverrides
       } = pollOverrides;
 
@@ -981,6 +998,13 @@
       let filterAfterTimestamp = cleanPollOverrides.filterAfterTimestamp ?? getVerificationPollPayload(step, state).filterAfterTimestamp;
       const maxResendRequests = resolveMaxResendRequests(pollOverrides);
       const maxRounds = maxResendRequests + 1;
+      const initialPollMaxAttempts = Math.max(0, Math.floor(Number(pollOverrides.initialPollMaxAttempts) || 0));
+      const configuredPollAttemptPlan = Array.isArray(pollOverrides.pollAttemptPlan)
+        ? pollOverrides.pollAttemptPlan
+          .map((value) => Math.floor(Number(value) || 0))
+          .filter((value) => value > 0)
+        : [];
+      const pollAttemptPlan = rejectedCodes.size > 0 ? [] : configuredPollAttemptPlan;
       let usedResendRequests = 0;
 
       for (let round = 1; round <= maxRounds; round++) {
@@ -1001,6 +1025,12 @@
           filterAfterTimestamp,
           excludeCodes: [...rejectedCodes],
         });
+        const plannedPollMaxAttempts = pollAttemptPlan[round - 1] || 0;
+        if (plannedPollMaxAttempts > 0) {
+          payload.maxAttempts = plannedPollMaxAttempts;
+        } else if (round === 1 && initialPollMaxAttempts > 0) {
+          payload.maxAttempts = initialPollMaxAttempts;
+        }
 
         try {
           const timedPoll = await applyMailPollingTimeBudget(
@@ -1306,6 +1336,12 @@
             disableTimeBudgetCap: Boolean(options.disableTimeBudgetCap),
             getRemainingTimeMs: options.getRemainingTimeMs,
             maxResendRequests: remainingAutomaticResendCount,
+            initialPollMaxAttempts: mail.provider === '2925' && rejectedCodes.size > 0
+              ? undefined
+              : options.initialPollMaxAttempts,
+            pollAttemptPlan: mail.provider === '2925' && rejectedCodes.size > 0
+              ? undefined
+              : options.pollAttemptPlan,
             resendIntervalMs,
             lastResendAt,
             onResendRequestedAt: updateFilterAfterTimestampForVerificationStep,
@@ -1364,7 +1400,11 @@
             [stateKey]: result.code,
           });
 
-          await completeStepFromBackground(completionStep, {
+          const completionNodeId = await getNodeIdForStep(completionStep);
+          if (!completionNodeId) {
+            throw new Error(`步骤 ${completionStep} 未映射到验证码节点。`);
+          }
+          await completeNodeFromBackground(completionNodeId, {
             emailTimestamp: result.emailTimestamp,
             code: result.code,
             phoneVerificationRequired: Boolean(submitResult.addPhonePage),

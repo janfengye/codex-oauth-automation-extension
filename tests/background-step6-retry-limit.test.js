@@ -1,4 +1,4 @@
-const test = require('node:test');
+﻿const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 
@@ -17,7 +17,7 @@ test('step 6 waits for registration success and completes from background', asyn
     addLog: async (message, level = 'info') => {
       events.logs.push({ message, level });
     },
-    completeStepFromBackground: async (step) => {
+    completeNodeFromBackground: async (step) => {
       events.completedSteps.push(step);
     },
     sleepWithStop: async (ms) => {
@@ -28,7 +28,7 @@ test('step 6 waits for registration success and completes from background', asyn
   await executor.executeStep6();
 
   assert.deepStrictEqual(events.waits, [20000]);
-  assert.deepStrictEqual(events.completedSteps, [6]);
+  assert.deepStrictEqual(events.completedSteps, ['wait-registration-success']);
   assert.ok(events.logs.some(({ message }) => /等待 20 秒/.test(message)));
 });
 
@@ -64,7 +64,7 @@ test('step 6 only clears cookies when cleanup switch is enabled', async () => {
   const executor = api.createStep6Executor({
     addLog: async () => {},
     chrome: chromeApi,
-    completeStepFromBackground: async (step) => {
+    completeNodeFromBackground: async (step) => {
       events.completedSteps.push(step);
     },
     sleepWithStop: async () => {},
@@ -77,7 +77,7 @@ test('step 6 only clears cookies when cleanup switch is enabled', async () => {
 
   await executor.executeStep6({ step6CookieCleanupEnabled: true });
 
-  assert.deepStrictEqual(events.completedSteps, [6, 6]);
+  assert.deepStrictEqual(events.completedSteps, ['wait-registration-success', 'wait-registration-success']);
   assert.deepStrictEqual(events.removedCookies, [
     {
       url: 'https://chatgpt.com/auth',
@@ -102,7 +102,7 @@ test('step 7 retries up to configured limit and then fails', async () => {
 
   const executor = api.createStep7Executor({
     addLog: async () => {},
-    completeStepFromBackground: async () => {
+    completeNodeFromBackground: async () => {
       events.completed += 1;
     },
     getErrorMessage: (error) => error?.message || String(error || ''),
@@ -137,7 +137,7 @@ test('step 7 retries up to configured limit and then fails', async () => {
   assert.equal(events.completed, 0);
 });
 
-test('step 7 exits internal retry loop immediately when add-phone is detected', async () => {
+test('step 7 hands add-phone to the dedicated post-login phone node without internal retry', async () => {
   const source = fs.readFileSync('background/steps/oauth-login.js', 'utf8');
   const globalScope = {};
   const api = new Function('self', `${source}; return self.MultiPageBackgroundStep7;`)(globalScope);
@@ -145,7 +145,7 @@ test('step 7 exits internal retry loop immediately when add-phone is detected', 
   const events = {
     refreshCalls: 0,
     sendCalls: 0,
-    completed: 0,
+    completions: [],
     logs: [],
   };
 
@@ -153,8 +153,8 @@ test('step 7 exits internal retry loop immediately when add-phone is detected', 
     addLog: async (message, level = 'info') => {
       events.logs.push({ message, level });
     },
-    completeStepFromBackground: async () => {
-      events.completed += 1;
+    completeNodeFromBackground: async (step, payload) => {
+      events.completions.push({ step, payload });
     },
     getErrorMessage: (error) => error?.message || String(error || ''),
     getLoginAuthStateLabel: (state) => state || 'unknown',
@@ -174,21 +174,28 @@ test('step 7 exits internal retry loop immediately when add-phone is detected', 
     throwIfStopped: () => {},
   });
 
-  await assert.rejects(
-    () => executor.executeStep7({ email: 'user@example.com', password: 'secret' }),
-    /add-phone/
-  );
+  await executor.executeStep7({ email: 'user@example.com', password: 'secret' });
 
   assert.equal(events.refreshCalls, 1, 'add-phone should stop further OAuth refresh attempts');
   assert.equal(events.sendCalls, 1, 'add-phone should stop after the first failed login attempt');
-  assert.equal(events.completed, 0);
+  assert.deepStrictEqual(events.completions, [
+    {
+      step: 'oauth-login',
+      payload: {
+        loginVerificationRequestedAt: null,
+        skipLoginVerificationStep: true,
+        addPhonePage: true,
+        directOAuthConsentPage: false,
+      },
+    },
+  ]);
   assert.ok(
     !events.logs.some(({ message }) => /准备重试/.test(message)),
     'add-phone failure should not be logged as an internal retryable attempt'
   );
 });
 
-test('step 7 hands direct add-phone to shared phone verification when enabled', async () => {
+test('step 7 no longer runs shared phone verification inside oauth-login', async () => {
   const source = fs.readFileSync('background/steps/oauth-login.js', 'utf8');
   const globalScope = {};
   const api = new Function('self', `${source}; return self.MultiPageBackgroundStep7;`)(globalScope);
@@ -201,7 +208,7 @@ test('step 7 hands direct add-phone to shared phone verification when enabled', 
 
   const executor = api.createStep7Executor({
     addLog: async () => {},
-    completeStepFromBackground: async (step, payload) => {
+    completeNodeFromBackground: async (step, payload) => {
       events.completions.push({ step, payload });
     },
     getErrorMessage: (error) => error?.message || String(error || ''),
@@ -239,36 +246,21 @@ test('step 7 hands direct add-phone to shared phone verification when enabled', 
   });
 
   assert.equal(events.refreshCalls, 1);
-  assert.deepStrictEqual(events.phoneCalls, [
-    {
-      tabId: 91,
-      pageState: {
-        addPhonePage: true,
-        phoneVerificationPage: false,
-        state: 'add_phone_page',
-        url: 'https://auth.openai.com/add-phone',
-      },
-      options: {
-        step: 7,
-        visibleStep: 7,
-      },
-    },
-  ]);
+  assert.deepStrictEqual(events.phoneCalls, []);
   assert.deepStrictEqual(events.completions, [
     {
-      step: 7,
+      step: 'oauth-login',
       payload: {
         loginVerificationRequestedAt: null,
         skipLoginVerificationStep: true,
-        directOAuthConsentPage: true,
-        phoneVerification: true,
-        loginPhoneVerification: true,
+        addPhonePage: true,
+        directOAuthConsentPage: false,
       },
     },
   ]);
 });
 
-test('step 7 direct add-phone stays fatal when phone verification is disabled', async () => {
+test('step 7 add-phone handoff does not depend on phone verification being enabled', async () => {
   const source = fs.readFileSync('background/steps/oauth-login.js', 'utf8');
   const globalScope = {};
   const api = new Function('self', `${source}; return self.MultiPageBackgroundStep7;`)(globalScope);
@@ -280,7 +272,7 @@ test('step 7 direct add-phone stays fatal when phone verification is disabled', 
 
   const executor = api.createStep7Executor({
     addLog: async () => {},
-    completeStepFromBackground: async () => {
+    completeNodeFromBackground: async () => {
       events.completions += 1;
     },
     getErrorMessage: (error) => error?.message || String(error || ''),
@@ -304,15 +296,12 @@ test('step 7 direct add-phone stays fatal when phone verification is disabled', 
     throwIfStopped: () => {},
   });
 
-  await assert.rejects(
-    () => executor.executeStep7({ email: 'user@example.com', password: 'secret', phoneVerificationEnabled: false }),
-    /手机号页面.*接码|phone verification/i
-  );
+  await executor.executeStep7({ email: 'user@example.com', password: 'secret', phoneVerificationEnabled: false });
   assert.equal(events.phoneCalls, 0);
-  assert.equal(events.completions, 0);
+  assert.equal(events.completions, 1);
 });
 
-test('step 7 propagates fatal errors from shared add-phone verification', async () => {
+test('step 7 ignores obsolete shared add-phone verifier during handoff', async () => {
   const source = fs.readFileSync('background/steps/oauth-login.js', 'utf8');
   const globalScope = {};
   const api = new Function('self', `${source}; return self.MultiPageBackgroundStep7;`)(globalScope);
@@ -324,7 +313,7 @@ test('step 7 propagates fatal errors from shared add-phone verification', async 
 
   const executor = api.createStep7Executor({
     addLog: async () => {},
-    completeStepFromBackground: async () => {
+    completeNodeFromBackground: async () => {
       events.completions += 1;
     },
     getErrorMessage: (error) => error?.message || String(error || ''),
@@ -348,12 +337,9 @@ test('step 7 propagates fatal errors from shared add-phone verification', async 
     throwIfStopped: () => {},
   });
 
-  await assert.rejects(
-    () => executor.executeStep7({ email: 'user@example.com', password: 'secret', phoneVerificationEnabled: true }),
-    /没有可用手机号/
-  );
-  assert.equal(events.phoneCalls, 1);
-  assert.equal(events.completions, 0);
+  await executor.executeStep7({ email: 'user@example.com', password: 'secret', phoneVerificationEnabled: true });
+  assert.equal(events.phoneCalls, 0);
+  assert.equal(events.completions, 1);
 });
 
 test('step 7 starts a new oauth timeout window for each refreshed oauth url', async () => {
@@ -368,7 +354,7 @@ test('step 7 starts a new oauth timeout window for each refreshed oauth url', as
 
   const executor = api.createStep7Executor({
     addLog: async () => {},
-    completeStepFromBackground: async () => {},
+    completeNodeFromBackground: async () => {},
     getErrorMessage: (error) => error?.message || String(error || ''),
     getLoginAuthStateLabel: (state) => state || 'unknown',
     getOAuthFlowStepTimeoutMs: async (defaultTimeoutMs, options) => {
@@ -382,6 +368,7 @@ test('step 7 starts a new oauth timeout window for each refreshed oauth url', as
     reuseOrCreateTab: async () => {},
     sendToContentScriptResilient: async (_source, _message, options) => ({
       step6Outcome: 'success',
+      state: 'verification_page',
       usedTimeoutMs: options.timeoutMs,
     }),
     startOAuthFlowTimeoutWindow: async (payload) => {
@@ -419,7 +406,7 @@ test('step 7 forwards direct OAuth consent skip metadata when completing', async
 
   const executor = api.createStep7Executor({
     addLog: async () => {},
-    completeStepFromBackground: async (step, payload) => {
+    completeNodeFromBackground: async (step, payload) => {
       events.completions.push({ step, payload });
     },
     getErrorMessage: (error) => error?.message || String(error || ''),
@@ -447,7 +434,7 @@ test('step 7 forwards direct OAuth consent skip metadata when completing', async
 
   assert.deepStrictEqual(events.completions, [
     {
-      step: 10,
+      step: 'oauth-login',
       payload: {
         loginVerificationRequestedAt: null,
         skipLoginVerificationStep: true,
@@ -463,12 +450,15 @@ test('step 7 forwards phone login identity payload when account identifier is ph
   const api = new Function('self', `${source}; return self.MultiPageBackgroundStep7;`)(globalScope);
 
   const events = {
+    completions: [],
     payloads: [],
   };
 
   const executor = api.createStep7Executor({
     addLog: async () => {},
-    completeStepFromBackground: async () => {},
+    completeNodeFromBackground: async (step, payload) => {
+      events.completions.push({ step, payload });
+    },
     getErrorMessage: (error) => error?.message || String(error || ''),
     getLoginAuthStateLabel: (state) => state || 'unknown',
     getState: async () => ({
@@ -524,6 +514,24 @@ test('step 7 forwards phone login identity payload when account identifier is ph
       visibleStep: 7,
     },
   ]);
+  assert.deepStrictEqual(events.completions, [
+    {
+      step: 'oauth-login',
+      payload: {
+        loginVerificationRequestedAt: 123456,
+        accountIdentifierType: 'phone',
+        accountIdentifier: '66959916439',
+        signupPhoneNumber: '66959916439',
+        signupPhoneCompletedActivation: {
+          activationId: 'signup-done',
+          phoneNumber: '66959916439',
+          countryId: 52,
+          countryLabel: 'Thailand',
+        },
+        signupPhoneActivation: null,
+      },
+    },
+  ]);
 });
 
 test('step 7 keeps Plus email login even when phone sms runtime exists', async () => {
@@ -537,7 +545,7 @@ test('step 7 keeps Plus email login even when phone sms runtime exists', async (
 
   const executor = api.createStep7Executor({
     addLog: async () => {},
-    completeStepFromBackground: async () => {},
+    completeNodeFromBackground: async () => {},
     getErrorMessage: (error) => error?.message || String(error || ''),
     getLoginAuthStateLabel: (state) => state || 'unknown',
     getState: async () => ({
@@ -592,7 +600,7 @@ test('step 7 keeps phone login after step 8 stores an unbound email for phone si
   const phoneSignupState = {
     phoneVerificationEnabled: true,
     signupMethod: 'phone',
-    resolvedSignupMethod: 'phone',
+    resolvedSignupMethod: 'email',
     email: 'bound.step8@example.com',
     accountIdentifierType: 'email',
     accountIdentifier: 'bound.step8@example.com',
@@ -608,7 +616,7 @@ test('step 7 keeps phone login after step 8 stores an unbound email for phone si
 
   const executor = api.createStep7Executor({
     addLog: async () => {},
-    completeStepFromBackground: async () => {},
+    completeNodeFromBackground: async () => {},
     getErrorMessage: (error) => error?.message || String(error || ''),
     getLoginAuthStateLabel: (state) => state || 'unknown',
     getState: async () => ({ ...phoneSignupState }),
@@ -647,7 +655,7 @@ test('step 7 can infer phone login from an available phone signup configuration 
 
   const executor = api.createStep7Executor({
     addLog: async () => {},
-    completeStepFromBackground: async () => {},
+    completeNodeFromBackground: async () => {},
     getErrorMessage: (error) => error?.message || String(error || ''),
     getLoginAuthStateLabel: (state) => state || 'unknown',
     getState: async () => ({
@@ -694,7 +702,7 @@ test('step 7 can start from a manually filled signup phone without completed ste
 
   const executor = api.createStep7Executor({
     addLog: async () => {},
-    completeStepFromBackground: async (step, payload) => {
+    completeNodeFromBackground: async (step, payload) => {
       events.completions.push({ step, payload });
     },
     getErrorMessage: (error) => error?.message || String(error || ''),
@@ -734,9 +742,14 @@ test('step 7 can start from a manually filled signup phone without completed ste
   assert.equal(events.payloads[0].password, '');
   assert.deepStrictEqual(events.completions, [
     {
-      step: 7,
+      step: 'oauth-login',
       payload: {
         loginVerificationRequestedAt: 987654,
+        accountIdentifierType: 'phone',
+        accountIdentifier: '+447780579093',
+        signupPhoneNumber: '+447780579093',
+        signupPhoneCompletedActivation: null,
+        signupPhoneActivation: null,
       },
     },
   ]);
@@ -757,7 +770,7 @@ test('step 7 stops immediately when management secret is missing', async () => {
     addLog: async (message, level = 'info') => {
       events.logs.push({ message, level });
     },
-    completeStepFromBackground: async () => {},
+    completeNodeFromBackground: async () => {},
     getErrorMessage: (error) => error?.message || String(error || ''),
     getLoginAuthStateLabel: (state) => state || 'unknown',
     getState: async () => ({ email: 'user@example.com', password: 'secret' }),
@@ -801,7 +814,7 @@ test('step 7 stops immediately when management secret is invalid', async () => {
     addLog: async (message, level = 'info') => {
       events.logs.push({ message, level });
     },
-    completeStepFromBackground: async () => {},
+    completeNodeFromBackground: async () => {},
     getErrorMessage: (error) => error?.message || String(error || ''),
     getLoginAuthStateLabel: (state) => state || 'unknown',
     getState: async () => ({ email: 'user@example.com', password: 'secret' }),
