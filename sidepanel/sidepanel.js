@@ -5827,6 +5827,34 @@ function normalizeHeroSmsFetchErrorMessage(error) {
   return message;
 }
 
+function normalizeHeroSmsCountryPayloadEntries(source) {
+  if (Array.isArray(source)) {
+    return source;
+  }
+  if (!source || typeof source !== 'object') {
+    return [];
+  }
+  return Object.values(source)
+    .filter((entry) => entry && typeof entry === 'object' && !Array.isArray(entry));
+}
+
+function parseHeroSmsCountryPayload(payload) {
+  const candidateSources = [
+    payload?.value,
+    payload?.data,
+    payload?.countries,
+    payload?.result,
+    payload,
+  ];
+  for (const source of candidateSources) {
+    const entries = normalizeHeroSmsCountryPayloadEntries(source);
+    if (entries.length) {
+      return entries;
+    }
+  }
+  return [];
+}
+
 function normalizeHeroSmsPriceForPreview(value) {
   const direct = Number(value);
   if (Number.isFinite(direct) && direct >= 0) {
@@ -7147,7 +7175,7 @@ async function loadHeroSmsCountries(options = {}) {
     });
     clearTimeout(timeoutId);
     const payload = await response.json();
-    const countries = Array.isArray(payload?.value) ? payload.value : (Array.isArray(payload) ? payload : []);
+    const countries = parseHeroSmsCountryPayload(payload);
     if (!countries.length) {
       throw new Error('国家列表为空');
     }
@@ -16247,7 +16275,7 @@ async function switchPhoneSmsProvider(nextProvider) {
   if (displayPhoneSmsBalance) displayPhoneSmsBalance.textContent = '余额未获取';
   if (rowHeroSmsPriceTiers) rowHeroSmsPriceTiers.style.display = 'none';
 
-  await loadHeroSmsCountries();
+  await loadHeroSmsCountries({ silent: true });
   const restoredPrimary = normalizedNextProvider === PHONE_SMS_PROVIDER_FIVE_SIM
     ? {
       id: normalizeFiveSimCountryId(latestState?.fiveSimCountryId),
