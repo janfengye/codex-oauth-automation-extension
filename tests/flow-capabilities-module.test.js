@@ -220,6 +220,29 @@ test('flow capability registry exposes editable Plus account access strategies f
   assert.equal(capabilityState.stepDefinitionOptions.plusAccountAccessStrategy, 'sub2api_codex_session');
 });
 
+test('flow capability registry maps session import to the current source target', () => {
+  const api = loadApi();
+  const registry = api.createFlowCapabilityRegistry();
+
+  const capabilityState = registry.resolveSidepanelCapabilities({
+    state: {
+      activeFlowId: 'openai',
+      openaiIntegrationTargetId: 'sub2api',
+      signupMethod: 'email',
+      plusModeEnabled: true,
+      plusAccountAccessStrategy: 'cpa_codex_session',
+    },
+  });
+
+  assert.deepEqual(
+    capabilityState.availablePlusAccountAccessStrategies,
+    ['oauth', 'sub2api_codex_session']
+  );
+  assert.equal(capabilityState.requestedPlusAccountAccessStrategy, 'sub2api_codex_session');
+  assert.equal(capabilityState.effectivePlusAccountAccessStrategy, 'sub2api_codex_session');
+  assert.equal(capabilityState.stepDefinitionOptions.plusAccountAccessStrategy, 'sub2api_codex_session');
+});
+
 test('flow capability registry exposes editable Plus account access strategies for CPA', () => {
   const api = loadApi();
   const registry = api.createFlowCapabilityRegistry();
@@ -244,7 +267,7 @@ test('flow capability registry exposes editable Plus account access strategies f
   assert.equal(capabilityState.stepDefinitionOptions.plusAccountAccessStrategy, 'cpa_codex_session');
 });
 
-test('flow capability registry forces OAuth when the current target only supports OAuth', () => {
+test('flow capability registry falls back to OAuth when the current source cannot import sessions', () => {
   const api = loadApi();
   const registry = api.createFlowCapabilityRegistry();
 
@@ -258,9 +281,34 @@ test('flow capability registry forces OAuth when the current target only support
     },
   });
 
-  assert.deepEqual(capabilityState.availablePlusAccountAccessStrategies, ['oauth']);
-  assert.equal(capabilityState.requestedPlusAccountAccessStrategy, 'cpa_codex_session');
+  assert.deepEqual(
+    capabilityState.availablePlusAccountAccessStrategies,
+    ['oauth']
+  );
+  assert.equal(capabilityState.requestedPlusAccountAccessStrategy, 'oauth');
   assert.equal(capabilityState.effectivePlusAccountAccessStrategy, 'oauth');
   assert.equal(capabilityState.canEditPlusAccountAccessStrategy, false);
   assert.equal(capabilityState.stepDefinitionOptions.plusAccountAccessStrategy, 'oauth');
+});
+
+test('flow capability registry forces SUB2API session import only for contribution mode Plus runs', () => {
+  const api = loadApi();
+  const registry = api.createFlowCapabilityRegistry();
+
+  const capabilityState = registry.resolveSidepanelCapabilities({
+    state: {
+      activeFlowId: 'openai',
+      openaiIntegrationTargetId: 'cpa',
+      signupMethod: 'email',
+      plusModeEnabled: true,
+      accountContributionEnabled: true,
+      plusAccountAccessStrategy: 'cpa_codex_session',
+    },
+  });
+
+  assert.deepEqual(capabilityState.availablePlusAccountAccessStrategies, ['sub2api_codex_session']);
+  assert.equal(capabilityState.requestedPlusAccountAccessStrategy, 'cpa_codex_session');
+  assert.equal(capabilityState.effectivePlusAccountAccessStrategy, 'sub2api_codex_session');
+  assert.equal(capabilityState.canEditPlusAccountAccessStrategy, false);
+  assert.equal(capabilityState.stepDefinitionOptions.plusAccountAccessStrategy, 'sub2api_codex_session');
 });

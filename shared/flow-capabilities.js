@@ -145,6 +145,28 @@
     return PLUS_ACCOUNT_ACCESS_STRATEGY_OAUTH;
   }
 
+  function getPlusAccountSessionStrategyForTarget(targetId = '') {
+    const normalizedTargetId = String(targetId || '').trim().toLowerCase();
+    if (normalizedTargetId === 'sub2api') {
+      return PLUS_ACCOUNT_ACCESS_STRATEGY_SUB2API_CODEX_SESSION;
+    }
+    if (normalizedTargetId === 'cpa') {
+      return PLUS_ACCOUNT_ACCESS_STRATEGY_CPA_CODEX_SESSION;
+    }
+    return PLUS_ACCOUNT_ACCESS_STRATEGY_OAUTH;
+  }
+
+  function normalizePlusAccountAccessStrategyForTarget(value = '', targetId = '') {
+    const normalizedStrategy = normalizePlusAccountAccessStrategy(value);
+    if (
+      normalizedStrategy === PLUS_ACCOUNT_ACCESS_STRATEGY_SUB2API_CODEX_SESSION
+      || normalizedStrategy === PLUS_ACCOUNT_ACCESS_STRATEGY_CPA_CODEX_SESSION
+    ) {
+      return getPlusAccountSessionStrategyForTarget(targetId);
+    }
+    return normalizedStrategy;
+  }
+
   function normalizeOpenAiTargetList(values = []) {
     if (!Array.isArray(values)) {
       return [];
@@ -375,27 +397,36 @@
         : (effectiveSignupMethods.includes(SIGNUP_METHOD_EMAIL)
           ? SIGNUP_METHOD_EMAIL
           : effectiveSignupMethods[0]);
-      const requestedPlusAccountAccessStrategy = normalizePlusAccountAccessStrategy(
-        options?.plusAccountAccessStrategy ?? state?.plusAccountAccessStrategy
+      const requestedPlusAccountAccessStrategy = normalizePlusAccountAccessStrategyForTarget(
+        options?.plusAccountAccessStrategy ?? state?.plusAccountAccessStrategy,
+        effectiveTargetId
       );
+      const targetPlusAccountAccessStrategies = (Array.isArray(targetState.supportedPlusAccountAccessStrategies)
+        && targetState.supportedPlusAccountAccessStrategies.length > 0
+        ? targetState.supportedPlusAccountAccessStrategies
+        : [PLUS_ACCOUNT_ACCESS_STRATEGY_OAUTH])
+        .map(normalizePlusAccountAccessStrategy)
+        .filter((strategy, index, strategies) => strategy && strategies.indexOf(strategy) === index);
       const availablePlusAccountAccessStrategies = activeFlowId === 'openai'
         && Boolean(flowState.supportsPlusMode)
         && Boolean(runtimeLocks.plusModeEnabled)
         && effectiveSignupMethod === SIGNUP_METHOD_EMAIL
-        ? (
-          Array.isArray(targetState.supportedPlusAccountAccessStrategies)
-            && targetState.supportedPlusAccountAccessStrategies.length > 0
-            ? targetState.supportedPlusAccountAccessStrategies.slice()
-            : [PLUS_ACCOUNT_ACCESS_STRATEGY_OAUTH]
-        )
+        ? (runtimeLocks.accountContribution
+          ? [PLUS_ACCOUNT_ACCESS_STRATEGY_SUB2API_CODEX_SESSION]
+          : targetPlusAccountAccessStrategies)
         : [PLUS_ACCOUNT_ACCESS_STRATEGY_OAUTH];
-      const effectivePlusAccountAccessStrategy = availablePlusAccountAccessStrategies.includes(requestedPlusAccountAccessStrategy)
+      const effectivePlusAccountAccessStrategy = runtimeLocks.accountContribution
+        && runtimeLocks.plusModeEnabled
+        && effectiveSignupMethod === SIGNUP_METHOD_EMAIL
+        ? PLUS_ACCOUNT_ACCESS_STRATEGY_SUB2API_CODEX_SESSION
+        : availablePlusAccountAccessStrategies.includes(requestedPlusAccountAccessStrategy)
         ? requestedPlusAccountAccessStrategy
         : PLUS_ACCOUNT_ACCESS_STRATEGY_OAUTH;
       const canEditPlusAccountAccessStrategy = activeFlowId === 'openai'
         && Boolean(flowState.supportsPlusMode)
         && Boolean(runtimeLocks.plusModeEnabled)
         && effectiveSignupMethod === SIGNUP_METHOD_EMAIL
+        && !runtimeLocks.accountContribution
         && availablePlusAccountAccessStrategies.length > 1;
       const visibleGroupIds = typeof flowRegistryApi.getVisibleGroupIds === 'function'
         && isRegisteredFlowId(activeFlowId)

@@ -209,6 +209,12 @@ const btnPayPalAccountMenu = document.getElementById('btn-paypal-account-menu');
 const payPalAccountCurrent = document.getElementById('paypal-account-current');
 const payPalAccountMenu = document.getElementById('paypal-account-menu');
 const btnAddPayPalAccount = document.getElementById('btn-add-paypal-account');
+const rowHostedCheckoutVerificationUrl = document.getElementById('row-hosted-checkout-verification-url');
+const inputHostedCheckoutVerificationUrl = document.getElementById('input-hosted-checkout-verification-url');
+const rowHostedCheckoutPhone = document.getElementById('row-hosted-checkout-phone');
+const inputHostedCheckoutPhone = document.getElementById('input-hosted-checkout-phone');
+const rowPlusHostedCheckoutOauthDelay = document.getElementById('row-plus-hosted-checkout-oauth-delay');
+const inputPlusHostedCheckoutOauthDelaySeconds = document.getElementById('input-plus-hosted-checkout-oauth-delay-seconds');
 const rowGpcHelperApi = document.getElementById('row-gpc-helper-api');
 const inputGpcHelperApi = document.getElementById('input-gpc-helper-api');
 const btnGpcHelperConvertApiKey = document.getElementById('btn-gpc-helper-convert-api-key');
@@ -545,16 +551,19 @@ const btnAutoStartContinue = document.getElementById('btn-auto-start-continue');
 const autoHintText = document.querySelector('.auto-hint');
 const stepsList = document.querySelector('.steps-list');
 const PLUS_PAYMENT_METHOD_PAYPAL = 'paypal';
+const PLUS_PAYMENT_METHOD_PAYPAL_HOSTED = 'paypal-hosted';
 const PLUS_PAYMENT_METHOD_GOPAY = 'gopay';
 const PLUS_PAYMENT_METHOD_GPC_HELPER = 'gpc-helper';
 const DEFAULT_GPC_HELPER_API_URL = 'https://gpc.qlhazycoder.top';
 const GPC_HELPER_PORTAL_URL = 'https://gpc.qlhazycoder.top/';
 const GPC_HELPER_PHONE_MODE_AUTO = 'auto';
 const GPC_HELPER_PHONE_MODE_MANUAL = 'manual';
-const DEFAULT_PLUS_PAYMENT_METHOD = PLUS_PAYMENT_METHOD_PAYPAL;
+const DEFAULT_PLUS_HOSTED_CHECKOUT_OAUTH_DELAY_SECONDS = 3;
+const DEFAULT_PLUS_PAYMENT_METHOD = PLUS_PAYMENT_METHOD_PAYPAL_HOSTED;
 const PLUS_ACCOUNT_ACCESS_STRATEGY_OAUTH = 'oauth';
 const PLUS_ACCOUNT_ACCESS_STRATEGY_SUB2API_CODEX_SESSION = 'sub2api_codex_session';
 const PLUS_ACCOUNT_ACCESS_STRATEGY_CPA_CODEX_SESSION = 'cpa_codex_session';
+const PLUS_ACCOUNT_ACCESS_STRATEGY_CODEX_SESSION_UI = 'codex_session';
 const DEFAULT_PLUS_ACCOUNT_ACCESS_STRATEGY = PLUS_ACCOUNT_ACCESS_STRATEGY_OAUTH;
 const SIGNUP_METHOD_EMAIL = 'email';
 const SIGNUP_METHOD_PHONE = 'phone';
@@ -2614,6 +2623,19 @@ function getStepExecutionRangeBoundaryNodeId(stepNumber, boundary = 'start') {
   return String(resolvedNodeId || fallbackNode?.nodeId || '').trim();
 }
 
+function getStepExecutionRangeStepOptionLabel(node = {}) {
+  const nodeId = String(node?.nodeId || '').trim();
+  const step = getStepIdByNodeIdForCurrentMode(nodeId);
+  const displayOrder = Number(node?.displayOrder);
+  if (Number.isInteger(step) && step > 0) {
+    return String(step);
+  }
+  if (Number.isInteger(displayOrder) && displayOrder > 0) {
+    return String(displayOrder);
+  }
+  return nodeId;
+}
+
 function syncStepExecutionRangeSelectOptions(selectedFromNodeId = '', selectedToNodeId = '') {
   const nodes = getStepExecutionRangeNodes();
   const fromSelect = inputStepExecutionRangeFrom;
@@ -2624,7 +2646,7 @@ function syncStepExecutionRangeSelectOptions(selectedFromNodeId = '', selectedTo
 
   const buildOptions = (selectedValue) => nodes.map((node) => {
     const nodeId = String(node?.nodeId || '').trim();
-    const label = getStepExecutionRangeNodeLabel(node);
+    const label = getStepExecutionRangeStepOptionLabel(node);
     return `<option value="${escapeHtml(nodeId)}"${nodeId === selectedValue ? ' selected' : ''}>${escapeHtml(label)}</option>`;
   }).join('');
 
@@ -2939,11 +2961,23 @@ function normalizePlusPaymentMethod(value = '') {
   const gopayValue = typeof PLUS_PAYMENT_METHOD_GOPAY !== 'undefined' ? PLUS_PAYMENT_METHOD_GOPAY : 'gopay';
   const gpcValue = typeof PLUS_PAYMENT_METHOD_GPC_HELPER !== 'undefined' ? PLUS_PAYMENT_METHOD_GPC_HELPER : 'gpc-helper';
   const paypalValue = typeof PLUS_PAYMENT_METHOD_PAYPAL !== 'undefined' ? PLUS_PAYMENT_METHOD_PAYPAL : 'paypal';
+  const paypalHostedValue = typeof PLUS_PAYMENT_METHOD_PAYPAL_HOSTED !== 'undefined' ? PLUS_PAYMENT_METHOD_PAYPAL_HOSTED : 'paypal-hosted';
   const normalized = String(value || '').trim().toLowerCase();
+  if (normalized === paypalHostedValue || normalized === 'paypal_direct' || normalized === 'paypal-direct') {
+    return paypalHostedValue;
+  }
   if (normalized === gpcValue) {
     return gpcValue;
   }
   return normalized === gopayValue ? gopayValue : paypalValue;
+}
+
+function normalizePlusHostedCheckoutOauthDelaySeconds(value) {
+  const numeric = Number(String(value ?? '').trim());
+  if (!Number.isFinite(numeric)) {
+    return DEFAULT_PLUS_HOSTED_CHECKOUT_OAUTH_DELAY_SECONDS;
+  }
+  return Math.min(120, Math.max(0, Math.floor(numeric)));
 }
 
 function normalizePlusAccountAccessStrategy(value = '') {
@@ -2955,6 +2989,37 @@ function normalizePlusAccountAccessStrategy(value = '') {
     return PLUS_ACCOUNT_ACCESS_STRATEGY_CPA_CODEX_SESSION;
   }
   return PLUS_ACCOUNT_ACCESS_STRATEGY_OAUTH;
+}
+
+function normalizePlusAccountAccessStrategyUiValue(value = '') {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (
+    normalized === PLUS_ACCOUNT_ACCESS_STRATEGY_CODEX_SESSION_UI
+    || normalized === PLUS_ACCOUNT_ACCESS_STRATEGY_SUB2API_CODEX_SESSION
+    || normalized === PLUS_ACCOUNT_ACCESS_STRATEGY_CPA_CODEX_SESSION
+  ) {
+    return PLUS_ACCOUNT_ACCESS_STRATEGY_CODEX_SESSION_UI;
+  }
+  return PLUS_ACCOUNT_ACCESS_STRATEGY_OAUTH;
+}
+
+function getPlusAccountSessionStrategyForTarget(targetId = '') {
+  const normalizedTargetId = normalizePlusStrategyTargetId(targetId);
+  if (normalizedTargetId === 'sub2api') {
+    return PLUS_ACCOUNT_ACCESS_STRATEGY_SUB2API_CODEX_SESSION;
+  }
+  if (normalizedTargetId === 'cpa') {
+    return PLUS_ACCOUNT_ACCESS_STRATEGY_CPA_CODEX_SESSION;
+  }
+  return PLUS_ACCOUNT_ACCESS_STRATEGY_OAUTH;
+}
+
+function resolvePlusAccountAccessStrategyForTarget(value = '', targetId = '') {
+  const normalizedUiValue = normalizePlusAccountAccessStrategyUiValue(value);
+  if (normalizedUiValue !== PLUS_ACCOUNT_ACCESS_STRATEGY_CODEX_SESSION_UI) {
+    return PLUS_ACCOUNT_ACCESS_STRATEGY_OAUTH;
+  }
+  return getPlusAccountSessionStrategyForTarget(targetId);
 }
 
 function getSelectedPlusPaymentMethod(state = latestState) {
@@ -2969,6 +3034,48 @@ function getRequestedPlusAccountAccessStrategy(state = latestState) {
   const defaultStrategy = typeof DEFAULT_PLUS_ACCOUNT_ACCESS_STRATEGY !== 'undefined'
     ? DEFAULT_PLUS_ACCOUNT_ACCESS_STRATEGY
     : 'oauth';
+  const oauthStrategyValue = typeof PLUS_ACCOUNT_ACCESS_STRATEGY_OAUTH !== 'undefined'
+    ? PLUS_ACCOUNT_ACCESS_STRATEGY_OAUTH
+    : 'oauth';
+  const sub2apiSessionStrategyValue = typeof PLUS_ACCOUNT_ACCESS_STRATEGY_SUB2API_CODEX_SESSION !== 'undefined'
+    ? PLUS_ACCOUNT_ACCESS_STRATEGY_SUB2API_CODEX_SESSION
+    : 'sub2api_codex_session';
+  const cpaSessionStrategyValue = typeof PLUS_ACCOUNT_ACCESS_STRATEGY_CPA_CODEX_SESSION !== 'undefined'
+    ? PLUS_ACCOUNT_ACCESS_STRATEGY_CPA_CODEX_SESSION
+    : 'cpa_codex_session';
+  const sessionUiValue = typeof PLUS_ACCOUNT_ACCESS_STRATEGY_CODEX_SESSION_UI !== 'undefined'
+    ? PLUS_ACCOUNT_ACCESS_STRATEGY_CODEX_SESSION_UI
+    : 'codex_session';
+  const resolveTargetId = () => {
+    if (typeof getSelectedPanelMode === 'function') {
+      return getSelectedPanelMode();
+    }
+    if (typeof selectPanelMode !== 'undefined' && selectPanelMode?.value) {
+      return selectPanelMode.value;
+    }
+    return state?.panelMode || state?.openaiIntegrationTargetId || 'cpa';
+  };
+  const resolveStrategyForTarget = typeof resolvePlusAccountAccessStrategyForTarget === 'function'
+    ? resolvePlusAccountAccessStrategyForTarget
+    : ((value = '', targetId = '') => {
+      const normalizedValue = String(value || '').trim().toLowerCase();
+      const isSessionImport = normalizedValue === sessionUiValue
+        || normalizedValue === sub2apiSessionStrategyValue
+        || normalizedValue === cpaSessionStrategyValue;
+      if (!isSessionImport) {
+        return oauthStrategyValue;
+      }
+      const normalizedTargetId = typeof normalizePlusStrategyTargetId === 'function'
+        ? normalizePlusStrategyTargetId(targetId)
+        : String(targetId || '').trim().toLowerCase();
+      if (normalizedTargetId === 'sub2api') {
+        return sub2apiSessionStrategyValue;
+      }
+      if (normalizedTargetId === 'cpa') {
+        return cpaSessionStrategyValue;
+      }
+      return oauthStrategyValue;
+    });
   const fallbackStrategy = normalizePlusAccountAccessStrategy(
     (typeof selectPlusAccountAccessStrategy !== 'undefined' && selectPlusAccountAccessStrategy?.dataset?.requestedValue)
     || state?.plusAccountAccessStrategy
@@ -2980,7 +3087,7 @@ function getRequestedPlusAccountAccessStrategy(state = latestState) {
     && selectPlusAccountAccessStrategy
     && !selectPlusAccountAccessStrategy.disabled
   ) {
-    return normalizePlusAccountAccessStrategy(selectPlusAccountAccessStrategy.value || fallbackStrategy);
+    return resolveStrategyForTarget(selectPlusAccountAccessStrategy.value || fallbackStrategy, resolveTargetId());
   }
   return fallbackStrategy;
 }
@@ -4505,6 +4612,15 @@ function collectSettingsPayload() {
   const currentKiroRsKeyValue = typeof inputKiroRsKey !== 'undefined' && inputKiroRsKey
     ? String(inputKiroRsKey.value ?? '').trim()
     : null;
+  const normalizeHostedCheckoutDelaySecondsSafe = typeof normalizePlusHostedCheckoutOauthDelaySeconds === 'function'
+    ? normalizePlusHostedCheckoutOauthDelaySeconds
+    : ((value) => {
+      const numeric = Number(String(value ?? '').trim());
+      if (!Number.isFinite(numeric)) {
+        return 3;
+      }
+      return Math.min(120, Math.max(0, Math.floor(numeric)));
+    });
   return {
     activeFlowId,
     ...(accountContributionEnabled ? {} : {
@@ -4562,6 +4678,17 @@ function collectSettingsPayload() {
     plusModeEnabled: effectivePlusModeEnabled,
     plusPaymentMethod,
     plusAccountAccessStrategy: requestedPlusAccountAccessStrategy,
+    hostedCheckoutVerificationUrl: typeof inputHostedCheckoutVerificationUrl !== 'undefined' && inputHostedCheckoutVerificationUrl
+      ? String(inputHostedCheckoutVerificationUrl.value || '').trim()
+      : String(latestState?.hostedCheckoutVerificationUrl || '').trim(),
+    hostedCheckoutPhoneNumber: typeof inputHostedCheckoutPhone !== 'undefined' && inputHostedCheckoutPhone
+      ? String(inputHostedCheckoutPhone.value || '').trim()
+      : String(latestState?.hostedCheckoutPhoneNumber || '').trim(),
+    plusHostedCheckoutOauthDelaySeconds: normalizeHostedCheckoutDelaySecondsSafe(
+      typeof inputPlusHostedCheckoutOauthDelaySeconds !== 'undefined' && inputPlusHostedCheckoutOauthDelaySeconds
+        ? inputPlusHostedCheckoutOauthDelaySeconds.value
+        : latestState?.plusHostedCheckoutOauthDelaySeconds
+    ),
     paypalEmail: String(currentPayPalAccount?.email || latestState?.paypalEmail || '').trim(),
     paypalPassword: String(currentPayPalAccount?.password || latestState?.paypalPassword || ''),
     currentPayPalAccountId: String(latestState?.currentPayPalAccountId || '').trim(),
@@ -9143,6 +9270,7 @@ function updatePhoneVerificationSettingsUI() {
 
 function updatePlusModeUI() {
   const paypalValue = typeof PLUS_PAYMENT_METHOD_PAYPAL !== 'undefined' ? PLUS_PAYMENT_METHOD_PAYPAL : 'paypal';
+  const paypalHostedValue = typeof PLUS_PAYMENT_METHOD_PAYPAL_HOSTED !== 'undefined' ? PLUS_PAYMENT_METHOD_PAYPAL_HOSTED : 'paypal-hosted';
   const gopayValue = typeof PLUS_PAYMENT_METHOD_GOPAY !== 'undefined' ? PLUS_PAYMENT_METHOD_GOPAY : 'gopay';
   const gpcValue = typeof PLUS_PAYMENT_METHOD_GPC_HELPER !== 'undefined' ? PLUS_PAYMENT_METHOD_GPC_HELPER : 'gpc-helper';
   const oauthStrategyValue = typeof PLUS_ACCOUNT_ACCESS_STRATEGY_OAUTH !== 'undefined'
@@ -9154,6 +9282,9 @@ function updatePlusModeUI() {
   const cpaSessionStrategyValue = typeof PLUS_ACCOUNT_ACCESS_STRATEGY_CPA_CODEX_SESSION !== 'undefined'
     ? PLUS_ACCOUNT_ACCESS_STRATEGY_CPA_CODEX_SESSION
     : 'cpa_codex_session';
+  const sessionUiStrategyValue = typeof PLUS_ACCOUNT_ACCESS_STRATEGY_CODEX_SESSION_UI !== 'undefined'
+    ? PLUS_ACCOUNT_ACCESS_STRATEGY_CODEX_SESSION_UI
+    : 'codex_session';
   const defaultMethod = typeof DEFAULT_PLUS_PAYMENT_METHOD !== 'undefined' ? DEFAULT_PLUS_PAYMENT_METHOD : paypalValue;
   const resolveStrategyTargetId = typeof normalizePlusStrategyTargetId === 'function'
     ? normalizePlusStrategyTargetId
@@ -9185,6 +9316,19 @@ function updatePlusModeUI() {
         return '通过 OAuth 回调创建 Codex2API 账号';
       }
       return '通过 OAuth 回调创建 CPA 账号';
+    });
+  const normalizeStrategyUiValue = typeof normalizePlusAccountAccessStrategyUiValue === 'function'
+    ? normalizePlusAccountAccessStrategyUiValue
+    : ((value = '') => {
+      const normalized = String(value || '').trim().toLowerCase();
+      if (
+        normalized === sessionUiStrategyValue
+        || normalized === sub2apiSessionStrategyValue
+        || normalized === cpaSessionStrategyValue
+      ) {
+        return sessionUiStrategyValue;
+      }
+      return oauthStrategyValue;
     });
   const requestedPlusAccountAccessStrategy = typeof getRequestedPlusAccountAccessStrategy === 'function'
     ? getRequestedPlusAccountAccessStrategy(latestState)
@@ -9259,6 +9403,7 @@ function updatePlusModeUI() {
   const selectedMethod = typeof selectPlusPaymentMethod !== 'undefined' && selectPlusPaymentMethod?.value
     ? normalizePlusPaymentMethod(selectPlusPaymentMethod.value)
     : method;
+  const hostedRowsVisible = enabled && selectedMethod === paypalHostedValue;
   const gpcRowsVisible = enabled && selectedMethod === gpcValue;
   const canShowGpcModeSelector = gpcRowsVisible;
   const localSmsControlsVisible = gpcRowsVisible && !isGpcAutoMode;
@@ -9277,6 +9422,8 @@ function updatePlusModeUI() {
       ? `GPC ${isGpcAutoMode ? '自动' : '手动'}订阅链路`
       : method === gopayValue
       ? 'GoPay 印尼订阅链路'
+      : method === paypalHostedValue
+      ? 'PayPal 无卡直绑链路'
       : 'PayPal 订阅链路';
   }
   if (typeof plusPaymentMethodCaption !== 'undefined' && plusPaymentMethodCaption && method === gpcValue && gpcAutoModeBlocked) {
@@ -9299,15 +9446,17 @@ function updatePlusModeUI() {
     row.style.display = enabled ? '' : 'none';
   });
   if (typeof selectPlusAccountAccessStrategy !== 'undefined' && selectPlusAccountAccessStrategy) {
-    const availableStrategySet = new Set(availablePlusAccountAccessStrategies);
+    const availableStrategyUiValueSet = new Set(availablePlusAccountAccessStrategies.map(normalizeStrategyUiValue));
     Array.from(selectPlusAccountAccessStrategy.options || []).forEach((option) => {
-      const optionValue = normalizePlusAccountAccessStrategy(option?.value || '');
-      const optionSupported = availableStrategySet.has(optionValue);
+      const optionValue = normalizeStrategyUiValue(option?.value || '');
+      const optionSupported = availableStrategyUiValueSet.has(optionValue);
       option.hidden = enabled ? !optionSupported : false;
       option.disabled = enabled ? !optionSupported : false;
     });
-    selectPlusAccountAccessStrategy.dataset.requestedValue = requestedPlusAccountAccessStrategy;
-    selectPlusAccountAccessStrategy.value = effectivePlusAccountAccessStrategy;
+    selectPlusAccountAccessStrategy.dataset.requestedValue = capabilityState?.runtimeLocks?.accountContribution
+      ? requestedPlusAccountAccessStrategy
+      : effectivePlusAccountAccessStrategy;
+    selectPlusAccountAccessStrategy.value = normalizeStrategyUiValue(effectivePlusAccountAccessStrategy);
     selectPlusAccountAccessStrategy.disabled = !enabled || !canEditPlusAccountAccessStrategy;
     selectPlusAccountAccessStrategy.setAttribute('aria-disabled', String(selectPlusAccountAccessStrategy.disabled));
   }
@@ -9335,12 +9484,35 @@ function updatePlusModeUI() {
     }
   }
   if (typeof plusAccountAccessStrategyCaption !== 'undefined' && plusAccountAccessStrategyCaption) {
-    plusAccountAccessStrategyCaption.textContent = !enabled || !canEditPlusAccountAccessStrategy
+    plusAccountAccessStrategyCaption.textContent = !enabled
       ? '当前来源仅支持 OAuth'
-      : describePlusAccountAccessStrategy(
+      : ((effectivePlusAccountAccessStrategy !== oauthStrategyValue || canEditPlusAccountAccessStrategy)
+        ? describePlusAccountAccessStrategy(
         effectivePlusAccountAccessStrategy,
         effectiveTargetId
-      );
+        )
+        : '当前来源仅支持 OAuth');
+  }
+  if (enabled && effectivePlusAccountAccessStrategy === sub2apiSessionStrategyValue) {
+    [
+      typeof rowSub2ApiUrl !== 'undefined' ? rowSub2ApiUrl : null,
+      typeof rowSub2ApiEmail !== 'undefined' ? rowSub2ApiEmail : null,
+      typeof rowSub2ApiPassword !== 'undefined' ? rowSub2ApiPassword : null,
+      typeof rowSub2ApiGroup !== 'undefined' ? rowSub2ApiGroup : null,
+      typeof rowSub2ApiAccountPriority !== 'undefined' ? rowSub2ApiAccountPriority : null,
+      typeof rowSub2ApiDefaultProxy !== 'undefined' ? rowSub2ApiDefaultProxy : null,
+    ].forEach((row) => {
+      if (row) row.style.display = '';
+    });
+  }
+  if (enabled && effectivePlusAccountAccessStrategy === cpaSessionStrategyValue) {
+    [
+      typeof rowVpsUrl !== 'undefined' ? rowVpsUrl : null,
+      typeof rowVpsPassword !== 'undefined' ? rowVpsPassword : null,
+      typeof rowLocalCpaStep9Mode !== 'undefined' ? rowLocalCpaStep9Mode : null,
+    ].forEach((row) => {
+      if (row) row.style.display = '';
+    });
   }
   [
     typeof rowPayPalAccount !== 'undefined' ? rowPayPalAccount : null,
@@ -9349,6 +9521,16 @@ function updatePlusModeUI() {
       return;
     }
     row.style.display = enabled && selectedMethod === paypalValue ? '' : 'none';
+  });
+  [
+    typeof rowHostedCheckoutVerificationUrl !== 'undefined' ? rowHostedCheckoutVerificationUrl : null,
+    typeof rowHostedCheckoutPhone !== 'undefined' ? rowHostedCheckoutPhone : null,
+    typeof rowPlusHostedCheckoutOauthDelay !== 'undefined' ? rowPlusHostedCheckoutOauthDelay : null,
+  ].forEach((row) => {
+    if (!row) {
+      return;
+    }
+    row.style.display = hostedRowsVisible ? '' : 'none';
   });
   [
     typeof rowGpcHelperApi !== 'undefined' ? rowGpcHelperApi : null,
@@ -10433,7 +10615,7 @@ function applySettingsState(state) {
   );
   if (typeof selectPlusAccountAccessStrategy !== 'undefined' && selectPlusAccountAccessStrategy) {
     selectPlusAccountAccessStrategy.dataset.requestedValue = currentPlusAccountAccessStrategy;
-    selectPlusAccountAccessStrategy.value = currentPlusAccountAccessStrategy;
+    selectPlusAccountAccessStrategy.value = normalizePlusAccountAccessStrategyUiValue(currentPlusAccountAccessStrategy);
   }
   if (typeof inputGpcHelperApi !== 'undefined' && inputGpcHelperApi) {
     const defaultGpcHelperApiUrl = typeof DEFAULT_GPC_HELPER_API_URL !== 'undefined'
@@ -10506,6 +10688,17 @@ function applySettingsState(state) {
   }
   if (typeof inputGoPayPin !== 'undefined' && inputGoPayPin) {
     inputGoPayPin.value = state?.gopayPin || '';
+  }
+  if (typeof inputHostedCheckoutVerificationUrl !== 'undefined' && inputHostedCheckoutVerificationUrl) {
+    inputHostedCheckoutVerificationUrl.value = String(state?.hostedCheckoutVerificationUrl || '').trim();
+  }
+  if (typeof inputHostedCheckoutPhone !== 'undefined' && inputHostedCheckoutPhone) {
+    inputHostedCheckoutPhone.value = String(state?.hostedCheckoutPhoneNumber || '').trim();
+  }
+  if (typeof inputPlusHostedCheckoutOauthDelaySeconds !== 'undefined' && inputPlusHostedCheckoutOauthDelaySeconds) {
+    inputPlusHostedCheckoutOauthDelaySeconds.value = String(
+      normalizePlusHostedCheckoutOauthDelaySeconds(state?.plusHostedCheckoutOauthDelaySeconds)
+    );
   }
   inputVpsUrl.value = state?.vpsUrl || '';
   inputVpsPassword.value = state?.vpsPassword || '';
@@ -14660,6 +14853,9 @@ inputVpsPassword.addEventListener('blur', () => {
     scheduleSettingsAutoSave();
   });
   input?.addEventListener('blur', () => {
+    if (input === inputPlusHostedCheckoutOauthDelaySeconds) {
+      input.value = String(normalizePlusHostedCheckoutOauthDelaySeconds(input.value));
+    }
     saveSettings({ silent: true }).catch(() => { });
   });
 });
@@ -14714,29 +14910,6 @@ inputPlusModeEnabled?.addEventListener('change', () => {
       signupMethod: getSelectedSignupMethod(),
     };
   syncStepDefinitionsForMode(stepDefinitionState.plusModeEnabled, getSelectedPlusPaymentMethod(), {
-    render: true,
-    signupMethod: stepDefinitionState.signupMethod,
-  });
-  markSettingsDirty(true);
-  saveSettings({ silent: true }).catch(() => { });
-});
-
-selectPlusPaymentMethod?.addEventListener('change', () => {
-  selectPlusPaymentMethod.value = normalizePlusPaymentMethod(selectPlusPaymentMethod.value);
-  updatePlusModeUI();
-  const stepDefinitionState = typeof resolveStepDefinitionCapabilityState === 'function'
-    ? resolveStepDefinitionCapabilityState({
-      ...(latestState || {}),
-      plusModeEnabled: Boolean(inputPlusModeEnabled?.checked),
-      signupMethod: getSelectedSignupMethod(),
-    }, {
-      signupMethod: getSelectedSignupMethod(),
-    })
-    : {
-      plusModeEnabled: Boolean(inputPlusModeEnabled?.checked),
-      signupMethod: getSelectedSignupMethod(),
-    };
-  syncStepDefinitionsForMode(stepDefinitionState.plusModeEnabled, selectPlusPaymentMethod.value, {
     render: true,
     signupMethod: stepDefinitionState.signupMethod,
   });
@@ -14842,6 +15015,7 @@ btnTestKiroRs?.addEventListener('click', async () => {
 });
 
 selectPlusPaymentMethod?.addEventListener('change', () => {
+  selectPlusPaymentMethod.value = normalizePlusPaymentMethod(selectPlusPaymentMethod.value);
   updatePlusModeUI();
   const stepDefinitionState = typeof resolveStepDefinitionCapabilityState === 'function'
     ? resolveStepDefinitionCapabilityState({
@@ -14878,6 +15052,9 @@ selectPlusPaymentMethod?.addEventListener('change', () => {
   inputGoPayPhone,
   inputGoPayOtp,
   inputGoPayPin,
+  inputHostedCheckoutVerificationUrl,
+  inputHostedCheckoutPhone,
+  inputPlusHostedCheckoutOauthDelaySeconds,
 ].forEach((input) => {
   input?.addEventListener('input', () => {
     markSettingsDirty(true);
@@ -15051,6 +15228,24 @@ selectPanelMode.addEventListener('change', async () => {
       flowId: activeFlowId,
       panelMode: nextPanelMode,
     });
+    if (
+      typeof selectPlusAccountAccessStrategy !== 'undefined'
+      && selectPlusAccountAccessStrategy
+      && !latestState?.accountContributionEnabled
+    ) {
+      const nextPlusStrategy = resolvePlusAccountAccessStrategyForTarget(
+        selectPlusAccountAccessStrategy.value
+          || selectPlusAccountAccessStrategy.dataset?.requestedValue
+          || currentPlusAccountAccessStrategy,
+        nextPanelMode
+      );
+      currentPlusAccountAccessStrategy = nextPlusStrategy;
+      selectPlusAccountAccessStrategy.dataset.requestedValue = nextPlusStrategy;
+      selectPlusAccountAccessStrategy.value = normalizePlusAccountAccessStrategyUiValue(nextPlusStrategy);
+      syncLatestState({
+        plusAccountAccessStrategy: nextPlusStrategy,
+      });
+    }
   } else {
     syncLatestState({
       activeFlowId,
@@ -15078,7 +15273,12 @@ selectPanelMode.addEventListener('change', async () => {
 });
 
 selectPlusAccountAccessStrategy?.addEventListener('change', () => {
-  selectPlusAccountAccessStrategy.value = normalizePlusAccountAccessStrategy(selectPlusAccountAccessStrategy.value);
+  const nextUiValue = normalizePlusAccountAccessStrategyUiValue(selectPlusAccountAccessStrategy.value);
+  selectPlusAccountAccessStrategy.value = nextUiValue;
+  selectPlusAccountAccessStrategy.dataset.requestedValue = resolvePlusAccountAccessStrategyForTarget(
+    nextUiValue,
+    typeof getSelectedPanelMode === 'function' ? getSelectedPanelMode() : latestState?.panelMode
+  );
   updatePlusModeUI();
   markSettingsDirty(true);
   saveSettings({ silent: true }).catch(() => { });
@@ -17046,7 +17246,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         currentPlusAccountAccessStrategy = normalizePlusAccountAccessStrategy(message.payload.plusAccountAccessStrategy);
         selectPlusAccountAccessStrategy.dataset.requestedValue = currentPlusAccountAccessStrategy;
         if (!selectPlusAccountAccessStrategy.disabled) {
-          selectPlusAccountAccessStrategy.value = currentPlusAccountAccessStrategy;
+          selectPlusAccountAccessStrategy.value = normalizePlusAccountAccessStrategyUiValue(currentPlusAccountAccessStrategy);
         }
       }
       if (message.payload.gopayHelperPhoneMode !== undefined && selectGpcHelperPhoneMode) {
