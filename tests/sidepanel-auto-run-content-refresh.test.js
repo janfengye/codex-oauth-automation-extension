@@ -134,7 +134,7 @@ async function refreshContributionContentHint() {
   events.push({ type: 'refresh' });
   ${refreshImpl ? 'return (' + refreshImpl + ')();' : 'return null;'}
 }
-async function ensureGpcApiKeyReadyForStart() {
+async function ensureGpcCardKeyReadyForStart() {
   return true;
 }
 ${bundle}
@@ -323,7 +323,7 @@ async function refreshContributionContentHint() {
   events.push({ type: 'refresh' });
   return null;
 }
-async function ensureGpcApiKeyReadyForStart() {
+async function ensureGpcCardKeyReadyForStart() {
   return true;
 }
 ${bundle}
@@ -367,7 +367,7 @@ function clearTimeout(value) {
 async function persistSignupPhoneInputForAction() {
   phonePersistCalls += 1;
 }
-function updateSaveButtonState() {}
+function updateSettingsSaveState() {}
 function collectSettingsPayload() {
   return { luckmailApiKey: 'autofilled-key' };
 }
