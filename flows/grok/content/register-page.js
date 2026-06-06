@@ -6,7 +6,8 @@ const GROK_EMAIL_SIGNUP_TEXT_PATTERN = /使用邮箱注册|sign\s*up\s*with\s*em
 const GROK_CONTINUE_TEXT_PATTERN = /continue|next|sign\s*up|submit|verify|继续|下一步|注册|提交|验证/i;
 const GROK_PROFILE_TEXT_PATTERN = /given\s*name|family\s*name|first\s*name|last\s*name|password|名字|姓氏|密码/i;
 const GROK_EMAIL_VERIFICATION_READY_TIMEOUT_MS = 90 * 1000;
-const GROK_PROFILE_SUBMIT_PRE_CLICK_DELAY_MS = 2000;
+const GROK_HUMAN_VERIFICATION_SUCCESS_TIMEOUT_MS = 120 * 1000;
+const GROK_HUMAN_VERIFICATION_SUCCESS_TEXT_PATTERN = /成功|success|verified|verification\s*(?:complete|successful)|challenge\s*(?:complete|passed)/i;
 
 function isVisibleGrokElement(element) {
   if (!element || !(element instanceof Element)) return false;
@@ -133,6 +134,67 @@ function findGrokSubmitButton(contextPattern = GROK_CONTINUE_TEXT_PATTERN) {
   return findGrokClickableByText(contextPattern)
     || Array.from(document.querySelectorAll('button:not([disabled]), [role="button"]')).filter(isVisibleGrokElement).at(-1)
     || null;
+}
+
+function getGrokTurnstileResponseValue() {
+  const fields = Array.from(document.querySelectorAll([
+    'input[name="cf-turnstile-response"]',
+    'textarea[name="cf-turnstile-response"]',
+  ].join(', ')));
+  const field = fields.find((element) => String(element.value || '').trim());
+  return String(field?.value || '').trim();
+}
+
+function getGrokHumanVerificationContainers() {
+  const selectors = [
+    '.cf-turnstile',
+    '[class*="turnstile" i]',
+    '[id*="turnstile" i]',
+    '[data-sitekey]',
+    'iframe[src*="challenges.cloudflare.com"]',
+    'iframe[src*="turnstile"]',
+    'iframe[title*="cloudflare" i]',
+    'iframe[title*="challenge" i]',
+    'input[name="cf-turnstile-response"]',
+    'textarea[name="cf-turnstile-response"]',
+  ].join(', ');
+  const containers = new Set();
+  for (const element of Array.from(document.querySelectorAll(selectors))) {
+    let current = element;
+    for (let depth = 0; current && depth < 5; depth += 1) {
+      if (current instanceof Element) containers.add(current);
+      current = current.parentElement;
+    }
+  }
+  return Array.from(containers);
+}
+
+function getGrokHumanVerificationSuccessEvidence() {
+  const token = getGrokTurnstileResponseValue();
+  if (token) {
+    return { type: 'turnstile_response' };
+  }
+
+  for (const container of getGrokHumanVerificationContainers()) {
+    const text = getGrokElementText(container);
+    if (text && GROK_HUMAN_VERIFICATION_SUCCESS_TEXT_PATTERN.test(text)) {
+      return { type: 'visible_success_text', text };
+    }
+  }
+
+  return null;
+}
+
+async function waitForGrokHumanVerificationSuccess() {
+  const result = await waitForGrok(
+    getGrokHumanVerificationSuccessEvidence,
+    {
+      timeoutMs: GROK_HUMAN_VERIFICATION_SUCCESS_TIMEOUT_MS,
+      intervalMs: 500,
+    }
+  );
+  if (result) return result;
+  throw new Error('x.ai 人机验证未显示成功，暂不点击完成注册。');
 }
 
 function getGrokPageState() {
@@ -279,11 +341,16 @@ async function submitGrokProfile(payload = {}) {
   fillInput(ready.firstInput, firstName);
   fillInput(ready.lastInput, lastName);
   ready.passwordInputs.forEach((input) => fillInput(input, password));
-  await sleep(GROK_PROFILE_SUBMIT_PRE_CLICK_DELAY_MS);
+  const humanVerification = await waitForGrokHumanVerificationSuccess();
   const button = findGrokSubmitButton();
   if (!button) throw new Error('未找到 x.ai 资料提交按钮。');
   simulateGrokClick(button);
-  return { submitted: true, state: 'profile_submitted', url: location.href };
+  return {
+    submitted: true,
+    state: 'profile_submitted',
+    url: location.href,
+    humanVerification: humanVerification?.type || '',
+  };
 }
 
 async function extractGrokSsoCookie() {
