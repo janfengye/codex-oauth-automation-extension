@@ -554,6 +554,7 @@ const HUMAN_STEP_DELAY_MIN = 700;
 const HUMAN_STEP_DELAY_MAX = 2200;
 const STEP6_MAX_ATTEMPTS = 3;
 const STEP7_MAIL_POLLING_RECOVERY_MAX_ATTEMPTS = 8;
+const EMAIL_SIGNUP_PHONE_VERIFICATION_RESTART_MAX_ATTEMPTS = 5;
 const OAUTH_FLOW_TIMEOUT_MS = 5 * 60 * 1000;
 const SUB2API_STEP1_RESPONSE_TIMEOUT_MS = 90000;
 const SUB2API_STEP9_RESPONSE_TIMEOUT_MS = 120000;
@@ -632,7 +633,7 @@ const IP_PROXY_AUTO_SYNC_DEFAULT_INTERVAL_MINUTES = 15;
 const AUTO_RUN_RETRY_DELAY_MS = 3000;
 const AUTO_RUN_MAX_RETRIES_PER_ROUND = 3;
 const GPC_CHECKOUT_RESTART_COOLDOWN_TRIGGER_COUNT = 3;
-const GPC_CHECKOUT_RESTART_COOLDOWN_MS = 5 * 60 * 1000;
+const GPC_CHECKOUT_RESTART_COOLDOWN_MS = 30 * 1000;
 const AUTO_STEP_DELAY_MIN_ALLOWED_SECONDS = 0;
 const AUTO_STEP_DELAY_MAX_ALLOWED_SECONDS = 600;
 const VERIFICATION_RESEND_COUNT_MIN = 0;
@@ -9779,6 +9780,10 @@ async function restartSignupPhonePasswordMismatchAttemptFromNode(nodeId, restart
   }
 }
 
+function isEmailSignupPhoneVerificationNode(nodeId = '') {
+  return String(nodeId || '').trim() === 'post-bound-email-phone-verification';
+}
+
 function isSignupUserAlreadyExistsFailure(error) {
   if (typeof loggingStatus !== 'undefined' && loggingStatus?.isSignupUserAlreadyExistsFailure) {
     return loggingStatus.isSignupUserAlreadyExistsFailure(error);
@@ -13094,6 +13099,7 @@ async function runAutoSequenceFromNodeGraph(startNodeId, context = {}) {
   let postStep7RestartCount = 0;
   let plusCheckoutRestartCount = 0;
   let step4RestartCount = 0;
+  let emailSignupPhoneVerificationRestartCount = 0;
   const normalizeAutoRunGpcCheckoutRestartCount = (value) => {
     const normalizedCount = Math.floor(Number(value) || 0);
     return normalizedCount > 0 ? normalizedCount : 0;
@@ -13239,7 +13245,7 @@ async function runAutoSequenceFromNodeGraph(startNodeId, context = {}) {
           ? latestStateForPlan.autoRunRoundSummaries
           : [],
         countdownTitle: countdownTitle || 'GPC 冷却中',
-        countdownNote: countdownNote || `第 ${currentRun}/${totalRunsForPlan} 轮第 ${attemptRunForPlan} 次尝试将在 5 分钟后继续`,
+        countdownNote: countdownNote || `第 ${currentRun}/${totalRunsForPlan} 轮第 ${attemptRunForPlan} 次尝试将在 30 秒后继续`,
       }, extraState);
     }
     if (logMessage) {
@@ -13526,8 +13532,8 @@ async function runAutoSequenceFromNodeGraph(startNodeId, context = {}) {
             totalRunsForPlan: totalRuns,
             attemptRunForPlan: attemptRuns,
             countdownTitle: 'GPC 冷却中',
-            countdownNote: `第 ${targetRun}/${totalRuns} 轮第 ${attemptRuns} 次尝试将在 5 分钟后继续回到 plus-checkout-create`,
-            logMessage: `GPC 第 ${checkoutRestartCount} 次回到 plus-checkout-create 后仍未恢复，已进入 5 分钟冷却，稍后继续当前尝试。`,
+            countdownNote: `第 ${targetRun}/${totalRuns} 轮第 ${attemptRuns} 次尝试将在 30 秒后继续回到 plus-checkout-create`,
+            logMessage: `GPC 第 ${checkoutRestartCount} 次回到 plus-checkout-create 后仍未恢复，已进入 30 秒冷却，稍后继续当前尝试。`,
           });
         }
         nodeIndex = Math.max(0, getNodeIndex(await getState(), 'plus-checkout-create'));
@@ -13573,6 +13579,36 @@ async function runAutoSequenceFromNodeGraph(startNodeId, context = {}) {
       }
 
       const restartDecision = await getPostStep6AutoRestartDecision(step, err);
+      if (restartDecision.blockedByAddPhone && isEmailSignupPhoneVerificationNode(nodeId)) {
+        emailSignupPhoneVerificationRestartCount += 1;
+        if (emailSignupPhoneVerificationRestartCount > EMAIL_SIGNUP_PHONE_VERIFICATION_RESTART_MAX_ATTEMPTS) {
+          await addLog(
+            `节点 ${getNodeLabel(nodeId, latestState)}：手机号验证失败后已自动重新开始 ${EMAIL_SIGNUP_PHONE_VERIFICATION_RESTART_MAX_ATTEMPTS} 次，停止继续重试。原因：${restartDecision.errorMessage || getErrorMessage(err)}`,
+            'error'
+          );
+          throw err;
+        }
+        const restartStep = restartDecision.restartStep;
+        const restartState = await getState();
+        const restartNodeId = String(getNodeIdByStepForState(restartStep, restartState) || 'oauth-login').trim();
+        const resetAfterNodeId = getPreviousNodeId(restartNodeId, restartState) || restartNodeId;
+        const authState = restartDecision.authState;
+        const authStateLabel = authState?.state ? getLoginAuthStateLabel(authState.state) : '未知页面';
+        const authStateSuffix = authState?.url
+          ? `当前认证页：${authStateLabel}（${authState.url}）`
+          : authState?.state
+            ? `当前认证页：${authStateLabel}`
+            : '未获取到认证页状态';
+        await addLog(
+          `节点 ${getNodeLabel(nodeId, latestState)}：手机号验证失败，准备回到节点 ${restartNodeId} 重新开始授权流程（第 ${emailSignupPhoneVerificationRestartCount}/${EMAIL_SIGNUP_PHONE_VERIFICATION_RESTART_MAX_ATTEMPTS} 次重开）。${authStateSuffix}；原因：${restartDecision.errorMessage || '未知错误'}`,
+          'warn'
+        );
+        await invalidateDownstreamAfterAutoRunNodeRestart(resetAfterNodeId, {
+          logLabel: `节点 ${nodeId} 手机号验证失败后准备回到 ${restartNodeId} 重试（第 ${emailSignupPhoneVerificationRestartCount}/${EMAIL_SIGNUP_PHONE_VERIFICATION_RESTART_MAX_ATTEMPTS} 次重开）`,
+        });
+        nodeIndex = Math.max(0, getNodeIndex(await getState(), restartNodeId));
+        continue;
+      }
       if (restartDecision.shouldRestart) {
         postStep7RestartCount += 1;
         const restartStep = restartDecision.restartStep;
@@ -13932,6 +13968,7 @@ const step1Executor = self.MultiPageBackgroundStep1?.createStep1Executor({
   addLog,
   completeNodeFromBackground,
   openSignupEntryTab,
+  sendToContentScriptResilient,
   waitForTabStableComplete,
 });
 const step2Executor = self.MultiPageBackgroundStep2?.createStep2Executor({
@@ -13939,7 +13976,6 @@ const step2Executor = self.MultiPageBackgroundStep2?.createStep2Executor({
   chrome,
   completeNodeFromBackground,
   ensureContentScriptReadyOnTab,
-  ensureSignupAuthEntryPageReady,
   ensureSignupEntryPageReady,
   ensureSignupPostEmailPageReadyInTab,
   ensureSignupPostIdentityPageReadyInTab: signupFlowHelpers.ensureSignupPostIdentityPageReadyInTab,
@@ -14647,10 +14683,6 @@ async function openSignupEntryTab(step = 1) {
 }
 
 async function ensureSignupEntryPageReady(step = 1) {
-  return signupFlowHelpers.ensureSignupEntryPageReady(step);
-}
-
-async function ensureSignupAuthEntryPageReady(step = 1) {
   return signupFlowHelpers.ensureSignupEntryPageReady(step);
 }
 
